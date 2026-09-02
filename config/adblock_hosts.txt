@@ -1,0 +1,85 @@
+# D.I.O. — Lista de hosts bloqueados (adblocker nativo)
+# Un dominio por línea. Los subdominios también quedan bloqueados.
+# El usuario puede editar ~/.dio/adblock_hosts.txt para personalizar.
+# Líneas vacías y que empiecen con # son ignoradas.
+
+# ── Publicidad de Google ──────────────────────────────────────────────────
+doubleclick.net
+ad.doubleclick.net
+googleadservices.com
+adservice.google.com
+googlesyndication.com
+googletagservices.com
+pagead2.googlesyndication.com
+tpc.googlesyndication.com
+
+# ── Analytics y tracking de Google ───────────────────────────────────────
+google-analytics.com
+ssl.google-analytics.com
+www.google-analytics.com
+analytics.google.com
+googletagmanager.com
+www.googletagmanager.com
+
+# ── Facebook / Meta ───────────────────────────────────────────────────────
+connect.facebook.net
+graph.facebook.com
+staticxx.facebook.com
+www.facebook.com
+pixel.facebook.com
+
+# ── Redes de publicidad de terceros ──────────────────────────────────────
+ads.youtube.com
+advertising.com
+adnxs.com
+adsrvr.org
+rubiconproject.com
+pubmatic.com
+openx.net
+appnexus.com
+criteo.com
+criteo.net
+taboola.com
+outbrain.com
+revcontent.com
+content.ad
+ligatus.com
+
+# ── Analytics de terceros ─────────────────────────────────────────────────
+scorecardresearch.com
+beacon.scorecardresearch.com
+quantserve.com
+pixel.quantserve.com
+hotjar.com
+script.hotjar.com
+static.hotjar.com
+mc.yandex.ru
+mc.yandex.com
+yadro.ru
+counter.yadro.ru
+
+# ── Trackers de redes sociales ────────────────────────────────────────────
+platform.twitter.com
+syndication.twitter.com
+ads.twitter.com
+pixel.twitter.com
+
+# ── Publicidad en video ───────────────────────────────────────────────────
+imasdk.googleapis.com
+securepubads.g.doubleclick.net
+ad.ytimg.com
+
+# ── Fingerprinting / spyware ──────────────────────────────────────────────
+fingerprintjs.com
+cdn.fingerprintjs.com
+tns-counter.ru
+an.yandex.ru
+
+# ── Popups y malvertising ─────────────────────────────────────────────────
+popcash.net
+popads.net
+trafficjunky.net
+exoclick.com
+juicyads.com
+ero-advertising.com
+trafficstars.com

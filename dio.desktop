@@ -1,0 +1,30 @@
+[Desktop Entry]
+Name=D.I.O.
+GenericName=Divisor Integrado Operativo
+Comment=Grid de navegadores web con sesiones aisladas
+Exec=python3 /home/juan/proyectos/D.I.O/dio.py
+Path=/home/juan/proyectos/D.I.O
+Icon=/home/juan/proyectos/D.I.O/assets/icon.png
+Type=Application
+Categories=Utility;Network;WebBrowser;Development;
+Terminal=false
+StartupNotify=true
+StartupWMClass=D.I.O.
+Keywords=browser;grid;dio;ia;chatgpt;claude;whatsapp;
+Actions=IA;WhatsApp;Correos;LowMemory;
+
+[Desktop Action IA]
+Name=Iniciar Preset IAs (2x3)
+Exec=python3 /home/juan/proyectos/D.I.O/dio.py --grid 2x3 --preset ia_grid
+
+[Desktop Action WhatsApp]
+Name=Iniciar Preset WhatsApp (2x2)
+Exec=python3 /home/juan/proyectos/D.I.O/dio.py --grid 2x2 --preset whatsapp_4
+
+[Desktop Action Correos]
+Name=Iniciar Preset Correos (2x4)
+Exec=python3 /home/juan/proyectos/D.I.O/dio.py --grid 2x4 --preset correos_8
+
+[Desktop Action LowMemory]
+Name=Iniciar en Modo Bajo Consumo
+Exec=python3 /home/juan/proyectos/D.I.O/dio.py --low-memory
