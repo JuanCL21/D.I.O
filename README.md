@@ -32,19 +32,30 @@ Aplicacion de escritorio que renderiza multiples instancias web de Chromium en u
 
 ---
 
-## Instalacion Rapida
+## Instalación Súper Fácil (1 solo comando)
+
+### En Linux / macOS:
+```bash
+curl -sSL https://raw.githubusercontent.com/JuanCL21/D.I.O/main/install.sh | bash
+```
+
+### En Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/JuanCL21/D.I.O/main/install.ps1 | iex
+```
+
+---
+
+## Instalación Manual
 
 ```bash
-# 1. Clonar el repositorio
-git clone https://github.com/tu-usuario/D.I.O.git
+# 1. Clonar el repositorio (Público, no requiere contraseñas ni tokens)
+git clone https://github.com/JuanCL21/D.I.O.git
 cd D.I.O
 
-# 2. Crear entorno virtual (Recomendado)
-python3 -m venv venv
-source venv/bin/activate   # En Windows: .\venv\Scripts\activate
-
-# 3. Instalar dependencias
-pip install -r requirements.txt
+# 2. Ejecutar instalador incluido
+chmod +x install.sh
+./install.sh
 ```
 
 Para una guia detallada por sistema operativo, consulte [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).

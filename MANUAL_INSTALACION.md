@@ -38,13 +38,27 @@ D.I.O. (Divisor Integrado Operativo) es una aplicacion de escritorio desarrollad
 
 ---
 
-## 4. Instalacion Paso a Paso
+## 4. Instalacion Rapida (1 Comando)
+
+### Linux / macOS:
+```bash
+curl -sSL https://raw.githubusercontent.com/JuanCL21/D.I.O/main/install.sh | bash
+```
+
+### Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/JuanCL21/D.I.O/main/install.ps1 | iex
+```
+
+---
+
+## 5. Instalacion Paso a Paso Manual
 
 ### 4.1 Instalacion en Linux (Debian / Ubuntu / Linux Mint)
 
 1. Clonar el repositorio o descargar el codigo fuente:
    ```bash
-   git clone https://github.com/tu-usuario/D.I.O.git
+   git clone https://github.com/JuanCL21/D.I.O.git
    cd D.I.O
    ```
 
@@ -127,7 +141,7 @@ pip install -r requirements.txt
 
 ---
 
-## 5. Modos de Ejecucion
+## 6. Modos de Ejecucion
 
 Una vez instalado, D.I.O. se ejecuta directamente con Python pasando los parametros deseados:
 
@@ -153,7 +167,7 @@ python3 dio.py --monitor 1
 
 ---
 
-## 6. Parametros de Linea de Comandos
+## 7. Parametros de Linea de Comandos
 
 | Parametro | Descripcion | Valor Predeterminado |
 |---|---|---|
@@ -168,7 +182,7 @@ python3 dio.py --monitor 1
 
 ---
 
-## 7. Atajos de Teclado Globales
+## 8. Atajos de Teclado Globales
 
 * `F11`: Alternar entre modo pantalla completa y modo ventana normal.
 * `Ctrl + Shift + R`: Recargar todos los paneles de forma simultanea.
@@ -179,7 +193,7 @@ python3 dio.py --monitor 1
 
 ---
 
-## 8. Estructura de Archivos y Directorios
+## 9. Estructura de Archivos y Directorios
 
 ```text
 D.I.O/
@@ -200,7 +214,7 @@ D.I.O/
 
 ---
 
-## 9. Solucion de Problemas Comunes
+## 10. Solucion de Problemas Comunes
 
 ### Error: `ModuleNotFoundError: No module named 'PyQt6'`
 * **Causa:** Las dependencias no fueron instaladas en el entorno Python activo.
