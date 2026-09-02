@@ -21,7 +21,7 @@ echo -e "${BOLD}${CYAN}═══════════════════
 # 1. Determinar directorio de instalación
 if [ -f "$(pwd)/dio.py" ]; then
     INSTALL_DIR="$(pwd)"
-    echo -e "${GREEN}✓ Ejecutando desde directorio local del proyecto:${NC} ${INSTALL_DIR}"
+    echo -e "${GREEN}✓ Ejecutando desde directorio del proyecto:${NC} ${INSTALL_DIR}"
 elif [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/dio.py" ]; then
     INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     echo -e "${GREEN}✓ Directorio del proyecto detectado:${NC} ${INSTALL_DIR}"
@@ -50,22 +50,28 @@ fi
 PY_VERSION=$(python3 --version 2>&1)
 echo -e "${GREEN}✓ Python detectado:${NC} ${PY_VERSION}"
 
-# 3. Crear entorno virtual
+# 3. Crear entorno virtual (con soporte para sistemas de archivos de red/SSHFS)
 echo -e "\n${CYAN}→ Configurando entorno virtual Python (venv)...${NC}"
-if [ ! -f "venv/bin/python3" ]; then
-    rm -rf venv
-    python3 -m venv venv || {
+VENV_DIR="${INSTALL_DIR}/venv"
+
+# Si crear venv en el directorio actual falla (por ejemplo, en montajes SSHFS/NFS), usar ~/.local/share/dio/venv
+if ! python3 -m venv "${VENV_DIR}" 2>/dev/null; then
+    echo -e "${YELLOW}[!] Sistema de archivos con restricciones detectado, creando venv en almacenamiento local...${NC}"
+    VENV_DIR="${HOME}/.local/share/dio/venv"
+    mkdir -p "${HOME}/.local/share/dio"
+    rm -rf "${VENV_DIR}"
+    python3 -m venv "${VENV_DIR}" || {
         echo -e "${RED}[✗] Error al crear entorno virtual.${NC}"
         echo -e "    En Debian/Ubuntu ejecute: ${YELLOW}sudo apt install -y python3-venv python3-pip${NC}"
         exit 1
     }
 fi
-echo -e "${GREEN}✓ Entorno virtual preparado.${NC}"
+echo -e "${GREEN}✓ Entorno virtual preparado en:${NC} ${VENV_DIR}"
 
 # 4. Instalar dependencias
 echo -e "\n${CYAN}→ Instalando dependencias (PyQt6, QtWebEngine, browser-cookie3)...${NC}"
-"${INSTALL_DIR}/venv/bin/pip" install --upgrade pip --quiet
-"${INSTALL_DIR}/venv/bin/pip" install -r requirements.txt --quiet
+"${VENV_DIR}/bin/pip" install --upgrade pip --quiet
+"${VENV_DIR}/bin/pip" install -r "${INSTALL_DIR}/requirements.txt" --quiet
 echo -e "${GREEN}✓ Dependencias instaladas correctamente.${NC}"
 
 # 5. Crear binario lanzador en ~/.local/bin/dio
@@ -73,11 +79,13 @@ mkdir -p "${HOME}/.local/bin"
 LAUNCHER="${HOME}/.local/bin/dio"
 cat << 'LAUNCHER_EOF' > "${LAUNCHER}"
 #!/usr/bin/env bash
-PROJECT_DIR="__DIR__"
-exec "${PROJECT_DIR}/venv/bin/python3" "${PROJECT_DIR}/dio.py" "$@"
+PROJECT_DIR="__PROJECT_DIR__"
+VENV_PYTHON="__VENV_PYTHON__"
+exec "${VENV_PYTHON}" "${PROJECT_DIR}/dio.py" "$@"
 LAUNCHER_EOF
 
-sed -i "s|__DIR__|${INSTALL_DIR}|g" "${LAUNCHER}"
+sed -i "s|__PROJECT_DIR__|${INSTALL_DIR}|g" "${LAUNCHER}"
+sed -i "s|__VENV_PYTHON__|${VENV_DIR}/bin/python3|g" "${LAUNCHER}"
 chmod +x "${LAUNCHER}"
 echo -e "${GREEN}✓ Lanzador de terminal creado en:${NC} ${LAUNCHER}"
 
@@ -93,7 +101,7 @@ cat << DESKTOP_EOF > "${HOME}/.local/share/applications/dio.desktop"
 Name=D.I.O.
 GenericName=Divisor Integrado Operativo
 Comment=Grid de navegadores web con sesiones aisladas
-Exec="${INSTALL_DIR}/venv/bin/python3" "${INSTALL_DIR}/dio.py"
+Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py"
 Path=${INSTALL_DIR}
 Icon=${ICON_PATH}
 Type=Application
@@ -106,19 +114,19 @@ Actions=IA;WhatsApp;Correos;LowMemory;
 
 [Desktop Action IA]
 Name=Iniciar Preset IAs (2x3)
-Exec="${INSTALL_DIR}/venv/bin/python3" "${INSTALL_DIR}/dio.py" --grid 2x3 --preset ia_grid
+Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py" --grid 2x3 --preset ia_grid
 
 [Desktop Action WhatsApp]
 Name=Iniciar Preset WhatsApp (2x2)
-Exec="${INSTALL_DIR}/venv/bin/python3" "${INSTALL_DIR}/dio.py" --grid 2x2 --preset whatsapp_4
+Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py" --grid 2x2 --preset whatsapp_4
 
 [Desktop Action Correos]
 Name=Iniciar Preset Correos (2x4)
-Exec="${INSTALL_DIR}/venv/bin/python3" "${INSTALL_DIR}/dio.py" --grid 2x4 --preset correos_8
+Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py" --grid 2x4 --preset correos_8
 
 [Desktop Action LowMemory]
 Name=Iniciar en Modo Bajo Consumo
-Exec="${INSTALL_DIR}/venv/bin/python3" "${INSTALL_DIR}/dio.py" --low-memory
+Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py" --low-memory
 DESKTOP_EOF
 
 chmod +x "${HOME}/.local/share/applications/dio.desktop"
@@ -133,4 +141,4 @@ echo -e "${BOLD}${GREEN}══════════════════�
 echo -e "  ${BOLD}Formas de uso:${NC}"
 echo -e "  1. Busca ${CYAN}'D.I.O.'${NC} en el menú de aplicaciones de tu sistema."
 echo -e "  2. Escribe ${CYAN}dio${NC} en cualquier terminal."
-echo -e "  3. Ejecuta directamente: ${CYAN}${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/dio.py${NC}\n"
+echo -e "  3. Ejecuta directamente: ${CYAN}${VENV_DIR}/bin/python3 ${INSTALL_DIR}/dio.py${NC}\n"
