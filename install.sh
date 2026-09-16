@@ -28,10 +28,10 @@ elif [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/dio.py
 else
     INSTALL_DIR="${DEFAULT_TARGET_DIR}"
     echo -e "${CYAN}→ Instalando en:${NC} ${INSTALL_DIR}"
-    if [ ! -d "${INSTALL_DIR}" ]; then
+    if [ ! -d "${INSTALL_DIR}" ] || [ ! -f "${INSTALL_DIR}/dio.py" ]; then
         echo -e "${CYAN}→ Clonando repositorio público desde GitHub...${NC}"
-        mkdir -p "$(dirname "${INSTALL_DIR}")"
-        git clone "${REPO_URL}" "${INSTALL_DIR}"
+        mkdir -p "${INSTALL_DIR}"
+        git clone "${REPO_URL}" "${INSTALL_DIR}" 2>/dev/null || (git clone "${REPO_URL}" /tmp/dio_clone_tmp && cp -r /tmp/dio_clone_tmp/. "${INSTALL_DIR}/" && rm -rf /tmp/dio_clone_tmp)
     else
         echo -e "${CYAN}→ Actualizando repositorio existente...${NC}"
         git -C "${INSTALL_DIR}" pull origin main || true
@@ -89,12 +89,19 @@ sed -i "s|__VENV_PYTHON__|${VENV_DIR}/bin/python3|g" "${LAUNCHER}"
 chmod +x "${LAUNCHER}"
 echo -e "${GREEN}✓ Lanzador de terminal creado en:${NC} ${LAUNCHER}"
 
-# 6. Crear acceso directo en el menú de aplicaciones de escritorio (.desktop)
+# 6. Crear acceso directo en el menú de aplicaciones de escritorio (.desktop) e instalar iconos
 mkdir -p "${HOME}/.local/share/applications"
-ICON_PATH="${INSTALL_DIR}/assets/icon.png"
-if [ ! -f "${ICON_PATH}" ]; then
-    ICON_PATH="web-browser"
-fi
+mkdir -p "${HOME}/.local/share/icons/hicolor/256x256/apps" \
+         "${HOME}/.local/share/icons/hicolor/128x128/apps" \
+         "${HOME}/.local/share/icons/hicolor/64x64/apps" \
+         "${HOME}/.local/share/icons/hicolor/48x48/apps" \
+         "${HOME}/.local/share/pixmaps"
+
+[ -f "${INSTALL_DIR}/assets/icon_256.png" ] && cp "${INSTALL_DIR}/assets/icon_256.png" "${HOME}/.local/share/icons/hicolor/256x256/apps/dio.png"
+[ -f "${INSTALL_DIR}/assets/icon_128.png" ] && cp "${INSTALL_DIR}/assets/icon_128.png" "${HOME}/.local/share/icons/hicolor/128x128/apps/dio.png"
+[ -f "${INSTALL_DIR}/assets/icon_64.png" ] && cp "${INSTALL_DIR}/assets/icon_64.png" "${HOME}/.local/share/icons/hicolor/64x64/apps/dio.png"
+[ -f "${INSTALL_DIR}/assets/icon_48.png" ] && cp "${INSTALL_DIR}/assets/icon_48.png" "${HOME}/.local/share/icons/hicolor/48x48/apps/dio.png"
+[ -f "${INSTALL_DIR}/assets/icon.png" ] && cp "${INSTALL_DIR}/assets/icon.png" "${HOME}/.local/share/pixmaps/dio.png"
 
 cat << DESKTOP_EOF > "${HOME}/.local/share/applications/dio.desktop"
 [Desktop Entry]
@@ -103,7 +110,7 @@ GenericName=Divisor Integrado Operativo
 Comment=Grid de navegadores web con sesiones aisladas
 Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py"
 Path=${INSTALL_DIR}
-Icon=${ICON_PATH}
+Icon=dio
 Type=Application
 Categories=Utility;Network;WebBrowser;Development;
 Terminal=false
@@ -130,9 +137,14 @@ Exec="${VENV_DIR}/bin/python3" "${INSTALL_DIR}/dio.py" --low-memory
 DESKTOP_EOF
 
 chmod +x "${HOME}/.local/share/applications/dio.desktop"
+[ -d "${HOME}/Escritorio" ] && cp "${HOME}/.local/share/applications/dio.desktop" "${HOME}/Escritorio/dio.desktop" && chmod +x "${HOME}/Escritorio/dio.desktop" && gio set "${HOME}/Escritorio/dio.desktop" metadata::trusted true 2>/dev/null || true
+[ -d "${HOME}/Desktop" ] && cp "${HOME}/.local/share/applications/dio.desktop" "${HOME}/Desktop/dio.desktop" && chmod +x "${HOME}/Desktop/dio.desktop" 2>/dev/null || true
 
 if command -v update-desktop-database &>/dev/null; then
     update-desktop-database "${HOME}/.local/share/applications" 2>/dev/null || true
+fi
+if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
 fi
 
 echo -e "\n${BOLD}${GREEN}════════════════════════════════════════════════════════════════${NC}"

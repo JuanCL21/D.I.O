@@ -22,6 +22,12 @@ from pathlib import Path
 
 import config
 
+# ── H-06: Blindaje contra TOCTOU (permisos 0700/0600 desde la creación) ──
+# Establecer umask restrictivo antes de que se cree cualquier directorio o archivo
+# bajo ~/.dio/ (logs, perfiles, session.json, config.json).
+if hasattr(os, "umask"):
+    os.umask(0o077)
+
 # ── Detección de flags tempranos ANTES de crear QApplication ─────────────
 # Todos los flags que modifican variables de entorno de Chromium deben
 # setearse aquí, antes de importar nada de Qt.
@@ -71,6 +77,7 @@ _ASK_DOWNLOAD = "--ask-download-location" in sys.argv
 if os.environ.get("XDG_SESSION_TYPE") == "wayland":
     os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
 
+from PyQt6 import sip
 from PyQt6.QtCore import QByteArray, QSize, QTimer, QUrl, Qt
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QShortcut
 from PyQt6.QtNetwork import QNetworkCookie
@@ -2327,6 +2334,8 @@ class DIOWindow(QMainWindow):
 
     def _save_session(self) -> None:
         """Guarda el layout de trabajo actual en ~/.dio/session.json."""
+        if not self._panels:
+            return
         try:
             config.DIO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -2379,11 +2388,17 @@ class DIOWindow(QMainWindow):
             logger.warning("Error restaurando splitters: %s", exc)
 
     def closeEvent(self, event) -> None:
+        # H-02: Guardar sesión antes de desmontar paneles y desacoplar
+        # explícitamente las páginas para evitar use-after-free y warnings
+        # de "Release of profile requested but WebEnginePage still not deleted".
+        self._save_session()
         for i, panel in enumerate(self._panels):
             logger.info(
                 "Cierre — Panel %d: URL=%s, tamaño=%dx%d",
                 i, panel.url().toString(), panel.width(), panel.height(),
             )
+        while self._panels:
+            self.teardown_panel(0)
         super().closeEvent(event)
 
     # ── Redimensionado ────────────────────────────────────────────────────
@@ -2520,6 +2535,52 @@ class DIOWindow(QMainWindow):
             self._rebuild_grid()
             logger.info("Panel agregado: %s (total=%d)", dialog.result_url, len(self._panels))
 
+    def teardown_panel(self, idx: int) -> None:
+        """
+        H-01 / H-02: Destruye de forma determinista un panel y sus recursos asociados.
+        Aplica el desacople estricto: panel.setPage(None) antes de destruir la página,
+        destruye la página explícitamente y libera el perfil C++ en memoria
+        (profile.deleteLater()), evitando fugas de procesos Chromium y desfasaje de índices.
+        """
+        if idx < 0 or idx >= len(self._panels):
+            return
+
+        view = self._panels.pop(idx)
+        profile = self._profiles.pop(idx) if idx < len(self._profiles) else None
+
+        if idx < len(self._overlays):
+            overlay = self._overlays.pop(idx)
+            overlay.setParent(None)
+            overlay.deleteLater()
+
+        if idx < len(self._mute_indicators):
+            indicator = self._mute_indicators.pop(idx)
+            indicator.setParent(None)
+            indicator.deleteLater()
+
+        # Desacoplar vista del layout
+        view.setParent(None)
+
+        # 1. Desacoplar explícitamente la página del QWebEngineView
+        page = view.page()
+        view.setPage(None)
+
+        # 2. Destruir la página desacoplada antes de liberar el perfil
+        if page is not None:
+            page.setParent(None)
+            try:
+                sip.delete(page)
+            except Exception:
+                page.deleteLater()
+        view.deleteLater()
+
+        # 3. Liberar el perfil en memoria (QWebEngineProfile)
+        #    deleteLater() descarga las estructuras C++ y termina el proceso
+        #    de render de Chromium asociado; los datos en disco (~/.dio/profiles/panel_N/)
+        #    permanecen intactos para futuras sesiones.
+        if profile is not None:
+            profile.deleteLater()
+
     def _remove_panel(self) -> None:
         view = self._get_focused_view()
         if view is None or len(self._panels) <= 1:
@@ -2528,14 +2589,7 @@ class DIOWindow(QMainWindow):
         if idx < 0:
             return
         url = view.url().toString()
-        self._panels.pop(idx)
-        if idx < len(self._overlays):
-            self._overlays.pop(idx)
-        if idx < len(self._mute_indicators):
-            self._mute_indicators.pop(idx)
-        view.setParent(None)
-        view.page().deleteLater()
-        view.deleteLater()
+        self.teardown_panel(idx)
         self._rebuild_grid()
         logger.info("Panel %d eliminado: %s (restantes=%d)", idx, url, len(self._panels))
 
