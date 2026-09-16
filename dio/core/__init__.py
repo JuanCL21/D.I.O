@@ -17,6 +17,14 @@ from dio.core.config import (
 )
 from dio.core.logger import logger, setup_logging
 from dio.core.security import ensure_umask, secure_directory
+from dio.core.state import (
+    InvalidTransitionError,
+    PanelEvent,
+    PanelState,
+    PanelStateMachine,
+    TRANSITION_TABLE,
+    TransitionRule,
+)
 
 __all__ = [
     "DIO_DIR",
@@ -34,4 +42,10 @@ __all__ = [
     "setup_logging",
     "ensure_umask",
     "secure_directory",
+    "PanelState",
+    "PanelEvent",
+    "PanelStateMachine",
+    "TRANSITION_TABLE",
+    "TransitionRule",
+    "InvalidTransitionError",
 ]

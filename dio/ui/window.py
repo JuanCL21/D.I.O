@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 import dio.core.config as config
 from dio.core.logger import logger
 from dio.core.security import _secure_directory, secure_directory
+from dio.core.state import PanelEvent, PanelState, PanelStateMachine
 from dio.browser.interceptor import AdBlockInterceptor
 from dio.browser.page import DIOPage, _SystemBrowserRedirectPage
 from dio.browser.scripts import (
@@ -108,6 +109,7 @@ class DIOWindow(QMainWindow):
         self._profiles: list[QWebEngineProfile] = []
         self._overlays: list[LoadingOverlay] = []
         self._mute_indicators: list[MutedIndicator] = []
+        self._fsms: list[PanelStateMachine] = []
         self._panel_counter = 0
 
         # Interceptor de adblock compartido
@@ -219,6 +221,10 @@ class DIOWindow(QMainWindow):
             )
         )
 
+        # FSM de ciclo de vida del panel
+        fsm = PanelStateMachine(panel_id=f"panel_{idx}")
+        self._fsms.append(fsm)
+
         view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         logger.info("Panel %d creado: %s", idx, url)
         return view
@@ -236,11 +242,17 @@ class DIOWindow(QMainWindow):
     def _on_load_progress(overlay: LoadingOverlay, progress: int) -> None:
         overlay.update_progress(progress)
 
-    @staticmethod
-    def _on_load_finished(overlay: LoadingOverlay, panel_idx: int, ok: bool) -> None:
+    def _on_load_finished(self, overlay: LoadingOverlay, panel_idx: int, ok: bool) -> None:
         overlay.hide()
         if not ok:
             logger.warning("Panel %d: carga falló o fue interrumpida", panel_idx)
+        if panel_idx < len(self._fsms):
+            fsm = self._fsms[panel_idx]
+            if fsm.state == PanelState.INITIALIZING:
+                fsm.trigger(PanelEvent.INIT_FINISHED)
+            elif fsm.state == PanelState.RECOVERING and ok:
+                # DECISIÓN 4: loadFinished(True) tras recreación exitosa
+                fsm.trigger(PanelEvent.LOAD_FINISHED_SUCCESS)
 
     # ── Construcción del grid con QSplitters anidados ─────────────────────
 
@@ -621,6 +633,15 @@ class DIOWindow(QMainWindow):
             "Reintentando en 3 segundos…",
             panel_idx, status_str, exit_code,
         )
+
+        # Transición de la FSM: CRASHED -> RECOVERING
+        if panel_idx < len(self._fsms):
+            fsm = self._fsms[panel_idx]
+            if fsm.can_trigger(PanelEvent.RENDER_CRASHED):
+                fsm.trigger(PanelEvent.RENDER_CRASHED)
+            if fsm.can_trigger(PanelEvent.RECOVERY_STARTED):
+                fsm.trigger(PanelEvent.RECOVERY_STARTED)
+
         QTimer.singleShot(3000, view.reload)
 
     # ── Persistencia de sesión ────────────────────────────────────────────
@@ -850,6 +871,9 @@ class DIOWindow(QMainWindow):
             indicator = self._mute_indicators.pop(idx)
             indicator.setParent(None)
             indicator.deleteLater()
+
+        if idx < len(self._fsms):
+            self._fsms.pop(idx)
 
         # Desacoplar vista del layout
         view.setParent(None)
