@@ -64,6 +64,9 @@ class TransitionRule:
     effect: Optional[str] = None
 
 
+DEFAULT_MAX_RETRIES: int = 3
+
+
 # ── TABLA DE TRANSICIONES AUDITABLE (Fuente única de verdad) ─────────────────
 TRANSITION_TABLE: tuple[TransitionRule, ...] = (
     # 1. Inicialización
@@ -133,7 +136,7 @@ TRANSITION_TABLE: tuple[TransitionRule, ...] = (
         event=PanelEvent.RECOVERY_STARTED,
         target=PanelState.RECOVERING,
         description="Inicia reintento de recreación con backoff exponencial.",
-        guard="crash_count < max_retries",
+        guard=f"crash_count <= max_retries (default {DEFAULT_MAX_RETRIES})",
         effect="programa reintento con backoff",
     ),
     # DECISIÓN 4: Fila explícita RECOVERING -> ACTIVE
@@ -145,11 +148,19 @@ TRANSITION_TABLE: tuple[TransitionRule, ...] = (
         effect="crash_count se resetea a 0",
     ),
     TransitionRule(
+        source=PanelState.CRASHED,
+        event=PanelEvent.RECOVERY_FAILED,
+        target=PanelState.FAILED,
+        description="Se agotaron los reintentos automáticos tras crash de renderer.",
+        guard=f"crash_count > max_retries (default > {DEFAULT_MAX_RETRIES})",
+        effect="muestra pantalla de error con botón de recarga manual",
+    ),
+    TransitionRule(
         source=PanelState.RECOVERING,
         event=PanelEvent.RECOVERY_FAILED,
         target=PanelState.FAILED,
         description="Se agotaron todos los reintentos de recuperación automática.",
-        guard="crash_count >= max_retries",
+        guard=f"crash_count > max_retries (default > {DEFAULT_MAX_RETRIES})",
         effect="muestra pantalla de error con botón de recarga manual",
     ),
     TransitionRule(
@@ -200,16 +211,22 @@ class PanelStateMachine:
         self,
         panel_id: str,
         initial_state: PanelState = PanelState.INITIALIZING,
+        max_retries: int = DEFAULT_MAX_RETRIES,
         on_state_changed: Optional[Callable[[PanelState, PanelState, PanelEvent], None]] = None,
     ) -> None:
         self.panel_id: str = panel_id
         self._state: PanelState = initial_state
         self.crash_count: int = 0
+        self.max_retries: int = max_retries
         self._on_state_changed: Optional[Callable[[PanelState, PanelState, PanelEvent], None]] = on_state_changed
 
     @property
     def state(self) -> PanelState:
         return self._state
+
+    def can_retry(self) -> bool:
+        """Verifica si el panel todavía tiene intentos de recuperación automáticos disponibles."""
+        return self.crash_count <= self.max_retries
 
     def can_trigger(self, event: PanelEvent) -> bool:
         """Verifica si un evento es válido desde el estado actual."""

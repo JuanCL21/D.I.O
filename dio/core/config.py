@@ -201,6 +201,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": False,
         "timeout_minutes": 15,
     },
+    "recovery": {
+        "max_retries": 3,
+        "backoff_base_s": 1.0,
+        "backoff_max_s": 16.0,
+    },
     "ipc": {
         "allow_eval_js": False,
         "socket_path": str(DIO_DIR / "dio.sock"),

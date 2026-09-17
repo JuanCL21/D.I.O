@@ -246,7 +246,9 @@ class DIOWindow(QMainWindow):
         )
 
         # FSM de ciclo de vida del panel
-        fsm = PanelStateMachine(panel_id=panel_id)
+        cfg = config.load_config_toml()
+        max_retries = cfg.get("recovery", {}).get("max_retries", 3)
+        fsm = PanelStateMachine(panel_id=panel_id, max_retries=max_retries)
         self._fsms.append(fsm)
 
         view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -677,16 +679,31 @@ class DIOWindow(QMainWindow):
         if fsm.can_trigger(PanelEvent.RENDER_CRASHED):
             fsm.trigger(PanelEvent.RENDER_CRASHED)
 
-        max_retries = 4
-        if fsm.crash_count <= max_retries:
+        cfg = config.load_config_toml()
+        rec_cfg = cfg.get("recovery", {})
+        max_retries = rec_cfg.get("max_retries", fsm.max_retries)
+        fsm.max_retries = max_retries
+        base_s = rec_cfg.get("backoff_base_s", 1.0)
+        max_s = rec_cfg.get("backoff_max_s", 16.0)
+
+        if fsm.can_retry():
             if fsm.can_trigger(PanelEvent.RECOVERY_STARTED):
                 fsm.trigger(PanelEvent.RECOVERY_STARTED)
-            # Backoff exponencial: 1s, 2s, 4s, 8s (tope 16s)
-            delay = min(1.0 * (2 ** (fsm.crash_count - 1)), 16.0)
+            # Backoff exponencial: base_s * 2^(crash_count - 1), tope max_s
+            # Para max_retries=3: intento 1 -> 1.0s, intento 2 -> 2.0s, intento 3 -> 4.0s
+            delay = min(base_s * (2 ** (fsm.crash_count - 1)), max_s)
+            logger.info(
+                "Panel %d [%s]: Programando reintento de recuperación %d/%d en %.1fs",
+                panel_idx, fsm.panel_id, fsm.crash_count, max_retries, delay,
+            )
             if panel_idx < len(self._crash_overlays):
                 self._crash_overlays[panel_idx].show_recovering(fsm.crash_count, max_retries, delay)
             QTimer.singleShot(int(delay * 1000), lambda i=panel_idx: self._attempt_crash_recovery(i))
         else:
+            logger.warning(
+                "Panel %d [%s]: Agotados %d reintentos automáticos. Transicionando a FAILED.",
+                panel_idx, fsm.panel_id, max_retries,
+            )
             if fsm.can_trigger(PanelEvent.RECOVERY_FAILED):
                 fsm.trigger(PanelEvent.RECOVERY_FAILED)
             if panel_idx < len(self._crash_overlays):

@@ -90,6 +90,39 @@ class TestPanelStateMachineTransitions:
         fsm.trigger(PanelEvent.MANUAL_RELOAD)
         assert fsm.state == PanelState.RECOVERING
 
+    def test_max_retries_threshold_exhaustion(self):
+        """Verifica que el umbral por defecto (max_retries=3) permite exactamente 3 reintentos antes de FAILED."""
+        fsm = PanelStateMachine("panel_0", initial_state=PanelState.ACTIVE, max_retries=3)
+        assert fsm.max_retries == 3
+
+        # Reintento 1
+        fsm.trigger(PanelEvent.RENDER_CRASHED)
+        assert fsm.crash_count == 1
+        assert fsm.can_retry() is True
+        fsm.trigger(PanelEvent.RECOVERY_STARTED)
+        assert fsm.state == PanelState.RECOVERING
+
+        # Reintento 2
+        fsm.trigger(PanelEvent.RENDER_CRASHED)
+        assert fsm.crash_count == 2
+        assert fsm.can_retry() is True
+        fsm.trigger(PanelEvent.RECOVERY_STARTED)
+        assert fsm.state == PanelState.RECOVERING
+
+        # Reintento 3
+        fsm.trigger(PanelEvent.RENDER_CRASHED)
+        assert fsm.crash_count == 3
+        assert fsm.can_retry() is True
+        fsm.trigger(PanelEvent.RECOVERY_STARTED)
+        assert fsm.state == PanelState.RECOVERING
+
+        # Caída 4: Agotados los 3 reintentos
+        fsm.trigger(PanelEvent.RENDER_CRASHED)
+        assert fsm.crash_count == 4
+        assert fsm.can_retry() is False
+        fsm.trigger(PanelEvent.RECOVERY_FAILED)
+        assert fsm.state == PanelState.FAILED
+
 
 class TestPanelStateMachineInvariants:
     """Verifica que las transiciones prohibidas por diseño sean rechazadas categóricamente."""
