@@ -1,0 +1,14 @@
+{
+  "name": "gemini",
+  "match_patterns": [
+    "gemini.google.com"
+  ],
+  "selectors": {
+    "working": "button[aria-label='Detener respuesta'], button[aria-label='Stop response'], mat-progress-spinner",
+    "blocked": "button[aria-label='Confirmar'], button[aria-label='Confirm'], div.confirmation-dialog button",
+    "done": "button[aria-label='Enviar mensaje']:not([disabled]), button[aria-label='Send message']:not([disabled])",
+    "input": "div.ql-editor[contenteditable='true'], textarea[aria-label='Escribe una consulta']",
+    "send_button": "button[aria-label='Enviar mensaje'], button[aria-label='Send message']"
+  },
+  "debounce_ms": 900
+}

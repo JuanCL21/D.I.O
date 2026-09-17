@@ -2,7 +2,7 @@
 D.I.O. — Páginas personalizadas de QWebEngine con gestión de OAuth y ventanas emergentes.
 """
 
-from PyQt6.QtCore import QTimer, QUrl, Qt
+from PyQt6.QtCore import QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QDialog, QVBoxLayout
 
 import dio.core.config as config
 from dio.core.logger import logger
+from dio.browser.agent_observer import AGENT_STATE_PREFIX
 
 
 class DIOPage(QWebEnginePage):
@@ -18,16 +19,33 @@ class DIOPage(QWebEnginePage):
     - Popups OAuth / diálogos de login: navega en el panel principal para
       evitar el bloqueo de Google a webviews embebidos.
     - target="_blank": navega en el mismo panel o delega al sistema.
+    - Captura de estados de agentes IA desde ApplicationWorld (Paso 5).
 
     IMPORTANTE: Las ventanas popup se almacenan en _active_popups para evitar
     que el garbage collector de Python destruya los objetos C++ antes de que
     Qt termine de usarlos (RuntimeError: wrapped C/C++ object deleted).
     """
 
+    agent_state_changed = pyqtSignal(str)
+
     def __init__(self, profile: QWebEngineProfile, parent_view: QWebEngineView) -> None:
         super().__init__(profile, parent_view)
         self._parent_view = parent_view
         self._active_popups: list[dict] = []
+
+    def javaScriptConsoleMessage(
+        self,
+        level: QWebEnginePage.JavaScriptConsoleMessageLevel,
+        message: str,
+        lineNumber: int,
+        sourceID: str,
+    ) -> None:
+        if message and message.startswith(AGENT_STATE_PREFIX):
+            state = message[len(AGENT_STATE_PREFIX):].strip().lower()
+            logger.debug("AI Cockpit: estado recibido desde JS: %s", state)
+            self.agent_state_changed.emit(state)
+            return
+        super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
 
     def createWindow(self, window_type: QWebEnginePage.WebWindowType) -> "QWebEnginePage | None":
         is_popup = window_type in (

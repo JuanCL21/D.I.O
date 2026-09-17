@@ -43,9 +43,12 @@ from PyQt6.QtWidgets import (
 import dio.core.config as config
 from dio.core.logger import logger
 from dio.core.security import _secure_directory, secure_directory
-from dio.core.state import PanelEvent, PanelState, PanelStateMachine
+from dio.core.state import AgentState, PanelEvent, PanelState, PanelStateMachine
 from dio.core.ipc_server import DIOIpcServer
 from dio.core.ipc_protocol import IpcCommand
+from dio.core.notifier import send_system_notification
+from dio.agents.loader import find_adapter_for_url, load_all_adapters
+from dio.browser.agent_observer import make_agent_observer_script
 from dio.browser.interceptor import AdBlockInterceptor
 from dio.browser.page import DIOPage, _SystemBrowserRedirectPage
 from dio.browser.profile_manager import ProfileManager
@@ -126,6 +129,10 @@ class DIOWindow(QMainWindow):
         self._last_focused_times: list[float] = []
         self._last_known_urls: list[str] = []
         self._panel_counter = 0
+
+        # AI Cockpit (Paso 5): adapters de agentes y estados por panel
+        self._agent_adapters = load_all_adapters()
+        self._agent_states: list[AgentState] = []
 
         # Interceptor de adblock compartido
         self._adblock_interceptor: AdBlockInterceptor | None = None
@@ -263,6 +270,18 @@ class DIOWindow(QMainWindow):
         fsm = PanelStateMachine(panel_id=panel_id, max_retries=max_retries)
         self._fsms.append(fsm)
 
+        # AI Cockpit (Paso 5): verificar si URL coincide con adapter e inyectar en ApplicationWorld
+        adapter = find_adapter_for_url(url, self._agent_adapters)
+        if adapter:
+            script = make_agent_observer_script(adapter)
+            profile.scripts().insert(script)
+            logger.info("Panel %d [%s]: Observer de IA '%s' inyectado en ApplicationWorld", idx, panel_id, adapter.name)
+
+        page.agent_state_changed.connect(
+            lambda state, i=idx: self._on_agent_state_changed(i, state)
+        )
+        self._agent_states.append(AgentState.IDLE)
+
         view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         logger.info("Panel %d creado [%s]: %s (pinned=%s)", idx, panel_id, url, is_pinned)
         return view
@@ -273,6 +292,18 @@ class DIOWindow(QMainWindow):
             url_str = qurl.toString()
             if url_str and url_str != "about:blank":
                 self._last_known_urls[panel_idx] = url_str
+
+                # AI Cockpit: verificar si nueva URL activa un adapter de IA
+                if panel_idx < len(self._profiles):
+                    adapter = find_adapter_for_url(url_str, self._agent_adapters)
+                    if adapter:
+                        profile = self._profiles[panel_idx]
+                        for s in list(profile.scripts().toList()):
+                            if s.name().startswith("dio_agent_observer_"):
+                                profile.scripts().remove(s)
+                        script = make_agent_observer_script(adapter)
+                        profile.scripts().insert(script)
+                        logger.info("Panel %d: Observer de IA actualizado a '%s'", panel_idx, adapter.name)
 
     # ── Callbacks de overlay de carga ─────────────────────────────────────
 
@@ -1219,6 +1250,9 @@ class DIOWindow(QMainWindow):
         if idx < len(self._fsms):
             self._fsms.pop(idx)
 
+        if idx < len(self._agent_states):
+            self._agent_states.pop(idx)
+
         if idx < len(self._pinned_flags):
             self._pinned_flags.pop(idx)
 
@@ -1269,6 +1303,10 @@ class DIOWindow(QMainWindow):
             self._panels[idx].setFocus()
             if idx < len(self._last_focused_times):
                 self._last_focused_times[idx] = time.time()
+            # AI Cockpit: limpieza automatica del indicador al hacer foco en el panel
+            if idx < len(self._agent_states) and self._agent_states[idx] == AgentState.DONE:
+                self._agent_states[idx] = AgentState.IDLE
+                self._update_panel_border(idx, AgentState.IDLE)
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -1387,12 +1425,14 @@ class DIOWindow(QMainWindow):
         for idx, view in enumerate(self._panels):
             panel_id = self._panel_index_to_id(idx)
             state = self._fsms[idx].state.name.lower() if idx < len(self._fsms) else "unknown"
+            agent_st = self._agent_states[idx].value if idx < len(self._agent_states) else "idle"
             url = view.url().toString() if view else ""
             pinned = self._pinned_flags[idx] if idx < len(self._pinned_flags) else False
             panels_info.append({
                 "panel_id": panel_id,
                 "index": idx,
                 "state": state,
+                "agent_state": agent_st,
                 "url": url,
                 "pinned": pinned,
             })
@@ -1489,6 +1529,60 @@ class DIOWindow(QMainWindow):
         page.runJavaScript(code)
         logger.info("IPC: eval_js en %s (%d chars de JS)", panel_id, len(code))
         return result
+
+    # ── AI Cockpit: Paso 5 — Handlers de Estado y Bordes ──────────────────
+
+    def _on_agent_state_changed(self, panel_idx: int, state_str: str) -> None:
+        """Maneja cambios de estado emitidos por el MutationObserver del agente de IA."""
+        if panel_idx < 0 or panel_idx >= len(self._agent_states):
+            return
+
+        try:
+            new_state = AgentState(state_str)
+        except ValueError:
+            new_state = AgentState.IDLE
+
+        old_state = self._agent_states[panel_idx]
+        if new_state == old_state:
+            return
+
+        self._agent_states[panel_idx] = new_state
+        panel_id = self._panel_index_to_id(panel_idx)
+        logger.info("AI Cockpit [%s]: estado agente %s -> %s", panel_id, old_state.value, new_state.value)
+
+        # Actualizar indicador visual de borde
+        self._update_panel_border(panel_idx, new_state)
+
+        # Notificacion nativa del SO si no tiene foco o ventana inactiva
+        if new_state in (AgentState.DONE, AgentState.BLOCKED):
+            is_focused = (self._get_focused_view() == self._panels[panel_idx])
+            is_active_window = self.isActiveWindow()
+            if not is_focused or not is_active_window:
+                title = f"D.I.O. — {panel_id.upper()}"
+                if new_state == AgentState.DONE:
+                    msg = "Respuesta completada"
+                    urgency = "normal"
+                else:
+                    msg = "Requiere confirmacion (bloqueado)"
+                    urgency = "critical"
+                send_system_notification(title=title, message=msg, urgency=urgency)
+
+    def _update_panel_border(self, panel_idx: int, state: AgentState) -> None:
+        """Actualiza el borde de color del panel segun el estado del agente de IA."""
+        if 0 <= panel_idx < len(self._panels):
+            view = self._panels[panel_idx]
+            if state == AgentState.WORKING:
+                # Azul
+                view.setStyleSheet("background: black; border: 2px solid #2563eb;")
+            elif state == AgentState.BLOCKED:
+                # Ambar
+                view.setStyleSheet("background: black; border: 2px solid #f59e0b;")
+            elif state == AgentState.DONE:
+                # Cian
+                view.setStyleSheet("background: black; border: 2px solid #06b6d4;")
+            else:
+                # Idle
+                view.setStyleSheet("background: black; border: none;")
 
 
 # ── Parsing de argumentos ────────────────────────────────────────────────

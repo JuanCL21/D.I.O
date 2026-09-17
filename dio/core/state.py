@@ -27,6 +27,14 @@ class PanelState(Enum):
     FAILED = auto()        # Reintentos de recuperación agotados; esperando acción manual
 
 
+class AgentState(str, Enum):
+    """Estados del asistente/agente de IA en el panel (AI Cockpit)."""
+    IDLE = "idle"
+    WORKING = "working"
+    BLOCKED = "blocked"
+    DONE = "done"
+
+
 class PanelEvent(Enum):
     """Eventos que disparan transiciones en el ciclo de vida de un panel."""
     INIT_FINISHED = auto()          # Primera carga completada exitosamente

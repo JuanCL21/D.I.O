@@ -18,6 +18,7 @@ from dio.core.config import (
 from dio.core.logger import logger, setup_logging
 from dio.core.security import ensure_umask, secure_directory
 from dio.core.state import (
+    AgentState,
     InvalidTransitionError,
     PanelEvent,
     PanelState,

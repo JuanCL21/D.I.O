@@ -1,0 +1,14 @@
+{
+  "name": "claude",
+  "match_patterns": [
+    "claude.ai"
+  ],
+  "selectors": {
+    "working": "button[aria-label='Stop response'], button[aria-label='Stop generating'], div.streaming-indicator",
+    "blocked": "button.approval-button, div[data-testid='permission-dialog'] button, button:has-text('Allow')",
+    "done": "button[aria-label='Send Message']:not([disabled]), div[contenteditable='true']:not([disabled])",
+    "input": "div[contenteditable='true'].ProseMirror, fieldset div[contenteditable='true']",
+    "send_button": "button[aria-label='Send Message']"
+  },
+  "debounce_ms": 800
+}
