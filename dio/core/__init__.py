@@ -25,6 +25,17 @@ from dio.core.state import (
     TRANSITION_TABLE,
     TransitionRule,
 )
+from dio.core.ipc_protocol import (
+    FRAME_TIMEOUT_MS,
+    HEADER_SIZE,
+    MAX_PAYLOAD,
+    IpcCommand,
+    frame_message,
+    make_request,
+    make_response,
+    parse_frame,
+)
+from dio.core.ipc_server import DIOIpcServer
 
 __all__ = [
     "DIO_DIR",
@@ -48,4 +59,14 @@ __all__ = [
     "TRANSITION_TABLE",
     "TransitionRule",
     "InvalidTransitionError",
+    "FRAME_TIMEOUT_MS",
+    "HEADER_SIZE",
+    "MAX_PAYLOAD",
+    "IpcCommand",
+    "frame_message",
+    "make_request",
+    "make_response",
+    "parse_frame",
+    "DIOIpcServer",
 ]
+

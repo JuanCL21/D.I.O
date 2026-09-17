@@ -6,6 +6,7 @@ atajos globales, teardown determinista de perfiles (H-01/H-02) y persistencia.
 import base64
 import json
 import logging
+import math
 import os
 import platform
 import stat
@@ -43,6 +44,8 @@ import dio.core.config as config
 from dio.core.logger import logger
 from dio.core.security import _secure_directory, secure_directory
 from dio.core.state import PanelEvent, PanelState, PanelStateMachine
+from dio.core.ipc_server import DIOIpcServer
+from dio.core.ipc_protocol import IpcCommand
 from dio.browser.interceptor import AdBlockInterceptor
 from dio.browser.page import DIOPage, _SystemBrowserRedirectPage
 from dio.browser.profile_manager import ProfileManager
@@ -150,6 +153,15 @@ class DIOWindow(QMainWindow):
         self._sleeping_timer.setInterval(15000)  # Cada 15 segundos
         self._sleeping_timer.timeout.connect(self._check_background_sleeping)
         self._sleeping_timer.start()
+
+        # ── Servidor IPC (Paso 4) ────────────────────────────────────────
+        self._ipc_server = DIOIpcServer(parent=self)
+        self._ipc_server.set_command_handler(self.handle_ipc_command)
+        self._ipc_server.set_window(self)
+        if self._ipc_server.start():
+            logger.info("IPC: Servidor arrancado con éxito")
+        else:
+            logger.warning("IPC: No se pudo arrancar el servidor")
 
         logger.info(
             "Ventana creada: grid=%dx%d, preset=%s, paneles=%d, monitor=%d, "
@@ -1009,6 +1021,10 @@ class DIOWindow(QMainWindow):
             logger.warning("Error restaurando splitters: %s", exc)
 
     def closeEvent(self, event) -> None:
+        # Detener servidor IPC antes del cierre (Paso 4)
+        if hasattr(self, '_ipc_server') and self._ipc_server is not None:
+            self._ipc_server.stop()
+
         # H-02: Guardar sesión antes de desmontar paneles y desacoplar
         # explícitamente las páginas para evitar use-after-free y warnings
         # de "Release of profile requested but WebEnginePage still not deleted".
@@ -1320,6 +1336,159 @@ class DIOWindow(QMainWindow):
         self._active_manual_dialog = dialog
         dialog.exec()
         self._active_manual_dialog = None
+
+    # ── IPC: Paso 4 — Handler de comandos ─────────────────────────────────
+
+    def _panel_id_to_index(self, panel_id: str) -> int:
+        """
+        Convierte un panel_id estable (ej. 'panel_0') al índice actual en self._panels.
+        Recorre las FSMs que almacenan el panel_id original.
+        Retorna -1 si no se encuentra.
+        """
+        for idx, fsm in enumerate(self._fsms):
+            if fsm.panel_id == panel_id:
+                return idx
+        return -1
+
+    def _panel_index_to_id(self, idx: int) -> str:
+        """Retorna el panel_id estable para un índice dado."""
+        if 0 <= idx < len(self._fsms):
+            return self._fsms[idx].panel_id
+        return f"panel_{idx}"
+
+    def handle_ipc_command(self, command: str, params: dict) -> dict:
+        """
+        Despacha un comando IPC recibido del DIOIpcServer.
+        Retorna un dict con el resultado (será serializado como JSON).
+        """
+        try:
+            cmd = IpcCommand(command)
+        except ValueError:
+            raise ValueError(f"Comando IPC desconocido: '{command}'")
+
+        if cmd == IpcCommand.STATUS:
+            return self._ipc_status()
+        elif cmd == IpcCommand.NAVIGATE:
+            return self._ipc_navigate(params)
+        elif cmd == IpcCommand.FOCUS:
+            return self._ipc_focus(params)
+        elif cmd == IpcCommand.CLOSE_PANEL:
+            return self._ipc_close_panel(params)
+        elif cmd == IpcCommand.SPLIT:
+            return self._ipc_split(params)
+        elif cmd == IpcCommand.EVAL_JS:
+            return self._ipc_eval_js(params)
+        else:
+            raise ValueError(f"Comando '{command}' no implementado")
+
+    def _ipc_status(self) -> dict:
+        """Retorna estado completo de todos los paneles para consumo externo."""
+        panels_info = []
+        for idx, view in enumerate(self._panels):
+            panel_id = self._panel_index_to_id(idx)
+            state = self._fsms[idx].state.name.lower() if idx < len(self._fsms) else "unknown"
+            url = view.url().toString() if view else ""
+            pinned = self._pinned_flags[idx] if idx < len(self._pinned_flags) else False
+            panels_info.append({
+                "panel_id": panel_id,
+                "index": idx,
+                "state": state,
+                "url": url,
+                "pinned": pinned,
+            })
+
+        return {
+            "panel_count": len(self._panels),
+            "grid": f"{self._rows}x{self._cols}",
+            "preset": self._preset_name,
+            "panels": panels_info,
+        }
+
+    def _ipc_navigate(self, params: dict) -> dict:
+        """Navega un panel a una URL. Requiere: panel_id, url."""
+        panel_id = params.get("panel_id", "")
+        url = params.get("url", "")
+        if not panel_id or not url:
+            raise ValueError("Faltan parámetros: 'panel_id' y 'url' son requeridos")
+
+        idx = self._panel_id_to_index(panel_id)
+        if idx < 0 or idx >= len(self._panels):
+            raise ValueError(f"Panel '{panel_id}' no encontrado")
+
+        # Si está hibernado, despertar primero
+        if idx < len(self._fsms) and self._fsms[idx].state == PanelState.HIBERNATED:
+            self.wake_panel(idx)
+
+        self._panels[idx].setUrl(QUrl(url))
+        logger.info("IPC: navigate %s → %s", panel_id, url)
+        return {"panel_id": panel_id, "url": url}
+
+    def _ipc_focus(self, params: dict) -> dict:
+        """Da foco a un panel. Requiere: panel_id."""
+        panel_id = params.get("panel_id", "")
+        if not panel_id:
+            raise ValueError("Falta parámetro: 'panel_id' es requerido")
+
+        idx = self._panel_id_to_index(panel_id)
+        if idx < 0 or idx >= len(self._panels):
+            raise ValueError(f"Panel '{panel_id}' no encontrado")
+
+        self._focus_panel(idx)
+        logger.info("IPC: focus → %s (idx=%d)", panel_id, idx)
+        return {"panel_id": panel_id, "focused": True}
+
+    def _ipc_close_panel(self, params: dict) -> dict:
+        """Cierra un panel. Requiere: panel_id."""
+        panel_id = params.get("panel_id", "")
+        if not panel_id:
+            raise ValueError("Falta parámetro: 'panel_id' es requerido")
+
+        idx = self._panel_id_to_index(panel_id)
+        if idx < 0 or idx >= len(self._panels):
+            raise ValueError(f"Panel '{panel_id}' no encontrado")
+
+        if len(self._panels) <= 1:
+            raise ValueError("No se puede cerrar el último panel")
+
+        url = self._panels[idx].url().toString()
+        self.teardown_panel(idx)
+        self._rebuild_grid()
+        logger.info("IPC: close_panel %s (url=%s)", panel_id, url)
+        return {"panel_id": panel_id, "closed": True}
+
+    def _ipc_split(self, params: dict) -> dict:
+        """Agrega un nuevo panel con la URL dada. Requiere: url."""
+        url = params.get("url", "about:blank")
+
+        view = self._create_panel(url)
+        self._panels.append(view)
+        self._rebuild_grid()
+
+        new_idx = len(self._panels) - 1
+        new_panel_id = self._panel_index_to_id(new_idx)
+        logger.info("IPC: split → nuevo %s con url=%s", new_panel_id, url)
+        return {"panel_id": new_panel_id, "url": url}
+
+    def _ipc_eval_js(self, params: dict) -> dict:
+        """Ejecuta JavaScript en un panel. Requiere: panel_id, code. Protegido por token."""
+        panel_id = params.get("panel_id", "")
+        code = params.get("code", "")
+        if not panel_id or not code:
+            raise ValueError("Faltan parámetros: 'panel_id' y 'code' son requeridos")
+
+        idx = self._panel_id_to_index(panel_id)
+        if idx < 0 or idx >= len(self._panels):
+            raise ValueError(f"Panel '{panel_id}' no encontrado")
+
+        page = self._panels[idx].page()
+        if page is None:
+            raise ValueError(f"Panel '{panel_id}' no tiene página activa")
+
+        # Ejecución síncrona bloqueante con callback
+        result = {"panel_id": panel_id, "executed": True}
+        page.runJavaScript(code)
+        logger.info("IPC: eval_js en %s (%d chars de JS)", panel_id, len(code))
+        return result
 
 
 # ── Parsing de argumentos ────────────────────────────────────────────────
