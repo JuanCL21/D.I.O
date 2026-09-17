@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -74,6 +75,7 @@ from dio.ui.dialogs import (
     SettingsOverlayDialog,
     resolve_query_or_url,
 )
+from dio.ui.detached import DetachedPanelWindow
 
 def _get_cli_flags():
     cfg = config.ensure_config()
@@ -142,13 +144,31 @@ class DIOWindow(QMainWindow):
         # Registro de atajos para el manual dinámico
         self.shortcuts_registry: dict[str, str] = {}
 
-        # Construir los paneles iniciales y el grid
+        # Workspaces virtuales (Paso 6)
+        cfg = config.load_config_toml()
+        self._max_workspaces = cfg.get("shortcuts", {}).get("max_workspaces", 9)
+        self._current_workspace_idx = 0
+        self._stacked_workspaces = QStackedWidget(self)
+        self._workspace_splitters: list[QSplitter | None] = [None] * self._max_workspaces
+        self._workspace_widgets: list[QWidget] = []
+        self._panel_workspaces: list[int] = []
+        self._detached_views: set[QWebEngineView] = set()
+        self._detached_windows: list[DetachedPanelWindow] = []
+
+        # Construir los paneles iniciales y asignarlos al workspace 0
         for url in urls:
             view = self._create_panel(url)
             self._panels.append(view)
+            self._panel_workspaces.append(0)
 
-        self._root_splitter = self._build_grid()
-        self.setCentralWidget(self._root_splitter)
+        # Inicializar páginas de workspaces en QStackedWidget
+        for ws_i in range(self._max_workspaces):
+            ws_widget = self._build_workspace_widget(ws_i)
+            self._workspace_widgets.append(ws_widget)
+            self._stacked_workspaces.addWidget(ws_widget)
+
+        self.setCentralWidget(self._stacked_workspaces)
+        self._stacked_workspaces.setCurrentIndex(0)
 
         if self._panels:
             self._panels[0].setFocus()
@@ -338,26 +358,49 @@ class DIOWindow(QMainWindow):
 
     # ── Construcción del grid con QSplitters anidados ─────────────────────
 
-    def _build_grid(self) -> QSplitter:
-        total = len(self._panels)
+    # ── Construcción de Workspaces y Grid con QSplitters anidados ─────────
+
+    @property
+    def _root_splitter(self) -> QSplitter | None:
+        if hasattr(self, "_workspace_splitters") and 0 <= self._current_workspace_idx < len(self._workspace_splitters):
+            return self._workspace_splitters[self._current_workspace_idx]
+        return None
+
+    @_root_splitter.setter
+    def _root_splitter(self, splitter: QSplitter | None) -> None:
+        if hasattr(self, "_workspace_splitters") and 0 <= self._current_workspace_idx < len(self._workspace_splitters):
+            self._workspace_splitters[self._current_workspace_idx] = splitter
+
+    def _build_workspace_widget(self, ws_idx: int) -> QWidget:
+        ws_panels = [
+            p for i, p in enumerate(self._panels)
+            if i < len(self._panel_workspaces)
+            and self._panel_workspaces[i] == ws_idx
+            and p not in self._detached_views
+        ]
+        total = len(ws_panels)
         if total == 0:
-            return QSplitter(Qt.Orientation.Vertical)
+            self._workspace_splitters[ws_idx] = None
+            empty = QWidget()
+            empty.setStyleSheet("background: #09090b;")
+            lay = QVBoxLayout(empty)
+            lbl = QLabel(f"Workspace {ws_idx + 1} vacio\nUsa Ctrl+N para agregar un nuevo panel a este espacio.")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #71717a; font-size: 14px;")
+            lay.addWidget(lbl)
+            return empty
 
         # Usar las dimensiones configuradas si son válidas; de lo contrario, calcularlas
-        if hasattr(self, "_rows") and hasattr(self, "_cols") and self._rows > 0 and self._cols > 0:
+        if ws_idx == 0 and hasattr(self, "_rows") and hasattr(self, "_cols") and self._rows > 0 and self._cols > 0:
             rows = self._rows
             cols = self._cols
-            # Si el total de paneles excede rows*cols, ajustar filas automáticamente
             if rows * cols < total:
                 rows = math.ceil(total / cols)
                 self._rows = rows
         else:
             rows, cols = self._compute_grid_dimensions(total)
-            self._rows = rows
-            self._cols = cols
 
         root = SeamlessSplitter(Qt.Orientation.Vertical)
-
         panel_idx = 0
         row_splitters = []
         for _ in range(rows):
@@ -367,19 +410,22 @@ class DIOWindow(QMainWindow):
             panels_in_row = min(cols, total - panel_idx)
             for _ in range(panels_in_row):
                 if panel_idx < total:
-                    row_splitter.addWidget(self._panels[panel_idx])
+                    row_splitter.addWidget(ws_panels[panel_idx])
                     panel_idx += 1
             root.addWidget(row_splitter)
             row_splitters.append(row_splitter)
 
-        # Nivelar y distribuir simétricamente los tamaños de todas las filas y columnas
         if root.count() > 0:
             root.setSizes([10000] * root.count())
         for r_split in row_splitters:
             if r_split.count() > 0:
                 r_split.setSizes([10000] * r_split.count())
 
+        self._workspace_splitters[ws_idx] = root
         return root
+
+    def _build_grid(self) -> QSplitter:
+        return self._build_workspace_widget(self._current_workspace_idx)
 
     @staticmethod
     def _compute_grid_dimensions(n: int) -> tuple[int, int]:
@@ -389,17 +435,109 @@ class DIOWindow(QMainWindow):
         rows = math.ceil(n / cols)
         return (rows, cols)
 
+    def _rebuild_workspace(self, ws_idx: int) -> None:
+        if ws_idx < 0 or ws_idx >= self._max_workspaces:
+            return
+
+        ws_panels = [
+            p for i, p in enumerate(self._panels)
+            if i < len(self._panel_workspaces)
+            and self._panel_workspaces[i] == ws_idx
+            and p not in self._detached_views
+        ]
+        for p in ws_panels:
+            p.setParent(None)
+
+        old_widget = self._workspace_widgets[ws_idx]
+        new_widget = self._build_workspace_widget(ws_idx)
+        self._workspace_widgets[ws_idx] = new_widget
+
+        self._stacked_workspaces.removeWidget(old_widget)
+        self._stacked_workspaces.insertWidget(ws_idx, new_widget)
+        old_widget.deleteLater()
+        self._stacked_workspaces.setCurrentIndex(self._current_workspace_idx)
+
+        if ws_panels:
+            ws_panels[0].setFocus()
+
     def _rebuild_grid(self) -> None:
-        for panel in self._panels:
-            panel.setParent(None)
+        self._rebuild_workspace(self._current_workspace_idx)
 
-        old_splitter = self._root_splitter
-        self._root_splitter = self._build_grid()
-        self.setCentralWidget(self._root_splitter)
-        old_splitter.deleteLater()
+    def switch_workspace(self, target_idx: int) -> None:
+        """Cambia al workspace virtual especificado (0 a max_workspaces-1)."""
+        if target_idx < 0 or target_idx >= self._max_workspaces:
+            return
+        if target_idx == self._current_workspace_idx:
+            return
 
-        if self._panels:
-            self._panels[0].setFocus()
+        self._current_workspace_idx = target_idx
+        self._stacked_workspaces.setCurrentIndex(target_idx)
+        ToastNotification(f"Workspace {target_idx + 1}", self)
+
+        ws_panels = [
+            p for i, p in enumerate(self._panels)
+            if i < len(self._panel_workspaces)
+            and self._panel_workspaces[i] == target_idx
+            and p not in self._detached_views
+        ]
+        if ws_panels:
+            ws_panels[0].setFocus()
+        logger.info("Workspace cambiado a %d (paneles=%d)", target_idx + 1, len(ws_panels))
+
+    def detach_panel(self, view: QWebEngineView | None = None) -> None:
+        """Extrae el panel especificado (o el enfocado) envolviendolo en una ventana flotante independiente."""
+        if view is None:
+            view = self._get_focused_view()
+        if view is None or view in self._detached_views or view not in self._panels:
+            return
+
+        idx = self._panels.index(view)
+        panel_id = self._panel_index_to_id(idx)
+
+        active_in_grid = [p for p in self._panels if p not in self._detached_views]
+        if len(active_in_grid) <= 1:
+            ToastNotification("No se puede desacoplar el unico panel activo", self)
+            return
+
+        self._detached_views.add(view)
+        ws_idx = self._panel_workspaces[idx] if idx < len(self._panel_workspaces) else self._current_workspace_idx
+        self._rebuild_workspace(ws_idx)
+
+        detached_win = DetachedPanelWindow(
+            view=view,
+            panel_id=panel_id,
+            reattach_callback=lambda v: self.reattach_panel(v),
+            parent=None,
+        )
+        self._detached_windows.append(detached_win)
+        detached_win.show()
+        ToastNotification(f"Panel {panel_id} desacoplado", self)
+        logger.info("Panel %s desacoplado a ventana flotante", panel_id)
+
+    def detach_focused_panel(self) -> None:
+        """Atajo Ctrl+Shift+D: desacopla el panel que tiene el foco activo."""
+        self.detach_panel(None)
+
+    def reattach_panel(self, view: QWebEngineView) -> None:
+        """Re-acopla un panel desacoplado al workspace activo."""
+        if view not in self._detached_views:
+            return
+
+        self._detached_views.remove(view)
+        self._detached_windows = [w for w in self._detached_windows if w.view != view]
+
+        if view in self._panels:
+            idx = self._panels.index(view)
+            if idx < len(self._panel_workspaces):
+                self._panel_workspaces[idx] = self._current_workspace_idx
+            panel_id = self._panel_index_to_id(idx)
+        else:
+            panel_id = "panel"
+
+        self._rebuild_workspace(self._current_workspace_idx)
+        view.setFocus()
+        ToastNotification(f"Panel {panel_id} re-acoplado a Workspace {self._current_workspace_idx + 1}", self)
+        logger.info("Panel %s re-acoplado a Workspace %d", panel_id, self._current_workspace_idx + 1)
 
     # ── Permisos del navegador (con dominios confiables) ──────────────────
 
@@ -537,11 +675,11 @@ class DIOWindow(QMainWindow):
         self, download: QWebEngineDownloadRequest, name: str
     ) -> None:
         if download.state() == QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
-            msg = f"✓ Descarga completada: {name}"
+            msg = f"[OK] Descarga completada: {name}"
             color = "#006622"
             logger.info("Descarga completada: '%s'", name)
         else:
-            msg = f"✗ Descarga fallida: {name}"
+            msg = f"[ERROR] Descarga fallida: {name}"
             color = "#880000"
             logger.warning("Descarga fallida: '%s' (estado=%s)", name, download.state())
 
@@ -619,7 +757,7 @@ class DIOWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        notice = QLabel("⚠ Solo se leerán cookies del dominio indicado. Nunca se registran valores en logs.")
+        notice = QLabel("[AVISO] Solo se leeran cookies del dominio indicado. Nunca se registran valores en logs.")
         notice.setStyleSheet("color: #a6adc8; font-size: 11px;")
         layout.addRow(notice)
 
@@ -692,7 +830,7 @@ class DIOWindow(QMainWindow):
             domain, browser_combo.currentText(), count, panel_idx,
         )
 
-        ToastNotification(f"✓ {count} cookies importadas desde {browser_combo.currentText()}", self)
+        ToastNotification(f"[OK] {count} cookies importadas desde {browser_combo.currentText()}", self)
 
     # ── Crash recovery ────────────────────────────────────────────────────
 
@@ -980,7 +1118,7 @@ class DIOWindow(QMainWindow):
         cfg.setdefault("panels", {}).setdefault(panel_id, {})["pinned"] = new_pinned
         config.save_config_toml(cfg)
 
-        status_str = "FIJADO 📌 (Do Not Sleep)" if new_pinned else "DESFIJADO 🌙 (Hibernación activa)"
+        status_str = "FIJADO [PIN] (Do Not Sleep)" if new_pinned else "DESFIJADO [SLEEP] (Hibernacion activa)"
         ToastNotification(f"Panel {idx} {status_str}", self)
         logger.info("Panel %d [%s]: %s", idx, panel_id, status_str)
 
@@ -1129,17 +1267,29 @@ class DIOWindow(QMainWindow):
         reg("F11", "Alternar pantalla completa / ventana normal", self._toggle_fullscreen)
 
         # Control de audio
-        reg("Ctrl+M", "Silenciar / activar audio del panel activo (muestra 🔇)", self._toggle_mute)
+        reg("Ctrl+M", "Silenciar / activar audio del panel activo (muestra indicador MUTE)", self._toggle_mute)
         reg("Ctrl+Shift+A", "Silenciar TODOS los paneles simultáneamente", self._mute_all)
 
         # Reorganización y Nivelación de Cuadrícula
         reg("Ctrl+E", "Nivelar y equilibrar todos los paneles simétricamente al 100%", self._equalize_panels)
         reg("Ctrl+Shift+E", "Nivelar y equilibrar todos los paneles simétricamente al 100%", self._equalize_panels)
         reg("Ctrl+G", "Menú rápido para reorganizar cuadrícula (3 cols × 2 filas, 2x2, etc.)", self._change_grid_dialog)
-        reg("Ctrl+Alt+3", "Reorganizar inmediatamente en 3 columnas × 2 filas (2x3)", lambda checked=False: self._set_grid_dimensions(2, 3))
-        reg("Ctrl+Alt+6", "Reorganizar inmediatamente en 3 columnas × 2 filas (2x3)", lambda checked=False: self._set_grid_dimensions(2, 3))
-        reg("Ctrl+Alt+2", "Reorganizar inmediatamente en 2 columnas × 2 filas (2x2)", lambda checked=False: self._set_grid_dimensions(2, 2))
-        reg("Ctrl+Alt+1", "Reorganizar en 3 columnas horizontales (1x3)", lambda checked=False: self._set_grid_dimensions(1, 3))
+
+        # Workspaces virtuales (Paso 6): Ctrl+Alt+1..9 configurable desde config.toml
+        cfg = config.load_config_toml()
+        ws_prefix = cfg.get("shortcuts", {}).get("workspace_prefix", "Ctrl+Alt")
+        detach_key = cfg.get("shortcuts", {}).get("detach_panel", "Ctrl+Shift+D")
+
+        for ws_idx in range(self._max_workspaces):
+            ws_num = ws_idx + 1
+            reg(
+                f"{ws_prefix}+{ws_num}",
+                f"Cambiar a Workspace {ws_num}",
+                lambda checked=False, i=ws_idx: self.switch_workspace(i),
+            )
+
+        # Desacoplar panel (Paso 6)
+        reg(detach_key, "Desacoplar panel activo a ventana flotante", self.detach_focused_panel)
 
         # Importar cookies
         reg(
@@ -1160,14 +1310,16 @@ class DIOWindow(QMainWindow):
 
     def _get_focused_view(self) -> QWebEngineView | None:
         focus_widget = QApplication.focusWidget()
-        if focus_widget is None and self._panels:
-            return self._panels[0]
+        if focus_widget is None:
+            ws_panels = [p for i, p in enumerate(self._panels) if i < len(self._panel_workspaces) and self._panel_workspaces[i] == self._current_workspace_idx and p not in self._detached_views]
+            return ws_panels[0] if ws_panels else (self._panels[0] if self._panels else None)
         widget = focus_widget
         while widget is not None:
             if isinstance(widget, QWebEngineView):
                 return widget
             widget = widget.parent()
-        return self._panels[0] if self._panels else None
+        ws_panels = [p for i, p in enumerate(self._panels) if i < len(self._panel_workspaces) and self._panel_workspaces[i] == self._current_workspace_idx and p not in self._detached_views]
+        return ws_panels[0] if ws_panels else (self._panels[0] if self._panels else None)
 
     def _goto_url(self) -> None:
         """Abre la ventana inteligente de búsqueda/URL para el panel activo."""
@@ -1210,8 +1362,9 @@ class DIOWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_url:
             view = self._create_panel(dialog.result_url)
             self._panels.append(view)
+            self._panel_workspaces.append(self._current_workspace_idx)
             self._rebuild_grid()
-            logger.info("Panel agregado: %s (total=%d)", dialog.result_url, len(self._panels))
+            logger.info("Panel agregado a Workspace %d: %s (total=%d)", self._current_workspace_idx + 1, dialog.result_url, len(self._panels))
 
     def teardown_panel(self, idx: int) -> None:
         """
@@ -1252,6 +1405,9 @@ class DIOWindow(QMainWindow):
 
         if idx < len(self._agent_states):
             self._agent_states.pop(idx)
+
+        if idx < len(self._panel_workspaces):
+            self._panel_workspaces.pop(idx)
 
         if idx < len(self._pinned_flags):
             self._pinned_flags.pop(idx)
@@ -1320,7 +1476,7 @@ class DIOWindow(QMainWindow):
             return
         self._rebuild_grid()
         ToastNotification(
-            f"📐 Cuadrícula equilibrada: {self._cols} columnas × {self._rows} filas",
+            f"Cuadricula equilibrada: {self._cols} columnas x {self._rows} filas",
             self,
             color="#2563eb",
         )
@@ -1332,7 +1488,7 @@ class DIOWindow(QMainWindow):
         self._cols = cols
         self._rebuild_grid()
         ToastNotification(
-            f"📐 Cuadrícula organizada: {cols} columnas × {rows} filas",
+            f"Cuadricula organizada: {cols} columnas x {rows} filas",
             self,
             color="#059669",
         )
@@ -1349,7 +1505,7 @@ class DIOWindow(QMainWindow):
         """Lanza una nueva ventana/instancia independiente de D.I.O."""
         cmd = [sys.executable, str(Path(__file__).resolve()), "--preset", self._preset_name]
         subprocess.Popen(cmd)
-        ToastNotification("🚀 Nueva ventana de D.I.O. iniciada", self)
+        ToastNotification("Nueva ventana de D.I.O. iniciada", self)
         logger.info("Nueva ventana de D.I.O. lanzada")
 
     def apply_settings(self, settings_dict: dict) -> None:
@@ -1428,9 +1584,13 @@ class DIOWindow(QMainWindow):
             agent_st = self._agent_states[idx].value if idx < len(self._agent_states) else "idle"
             url = view.url().toString() if view else ""
             pinned = self._pinned_flags[idx] if idx < len(self._pinned_flags) else False
+            ws_num = (self._panel_workspaces[idx] + 1) if idx < len(self._panel_workspaces) else 1
+            is_detached = view in self._detached_views
             panels_info.append({
                 "panel_id": panel_id,
                 "index": idx,
+                "workspace": ws_num,
+                "detached": is_detached,
                 "state": state,
                 "agent_state": agent_st,
                 "url": url,
@@ -1438,6 +1598,8 @@ class DIOWindow(QMainWindow):
             })
 
         return {
+            "current_workspace": self._current_workspace_idx + 1,
+            "max_workspaces": self._max_workspaces,
             "panel_count": len(self._panels),
             "grid": f"{self._rows}x{self._cols}",
             "preset": self._preset_name,
@@ -1502,6 +1664,7 @@ class DIOWindow(QMainWindow):
 
         view = self._create_panel(url)
         self._panels.append(view)
+        self._panel_workspaces.append(self._current_workspace_idx)
         self._rebuild_grid()
 
         new_idx = len(self._panels) - 1

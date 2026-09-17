@@ -175,12 +175,16 @@ class ProfileManager(QObject):
         # 2. Eliminar directorio de datos en disco
         target_path = config.PROFILES_DIR / panel_id
         if target_path.exists():
-            try:
-                shutil.rmtree(target_path)
-                logger.info("ProfileManager: Perfil [%s] eliminado permanentemente de disco tras confirmación", panel_id)
-                return True
-            except OSError as exc:
-                logger.error("ProfileManager: Error al eliminar perfil [%s] de disco: %s", panel_id, exc)
-                return False
+            for attempt in range(5):
+                try:
+                    shutil.rmtree(target_path)
+                    logger.info("ProfileManager: Perfil [%s] eliminado permanentemente de disco tras confirmación", panel_id)
+                    return True
+                except OSError as exc:
+                    if attempt < 4:
+                        time.sleep(0.05)
+                        continue
+                    logger.error("ProfileManager: Error al eliminar perfil [%s] de disco: %s", panel_id, exc)
+                    return False
 
         return False

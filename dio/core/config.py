@@ -213,6 +213,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "shortcuts": {
         "passthrough_key": "ScrollLock",
         "invocation_key": "F1",
+        "detach_panel": "Ctrl+Shift+D",
+        "workspace_prefix": "Ctrl+Alt",
+        "max_workspaces": 9,
         "disabled_shortcuts": [],
         "custom_keybindings": {},
     },
