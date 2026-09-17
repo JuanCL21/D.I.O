@@ -133,7 +133,7 @@ def cmd_navigate(args: argparse.Namespace) -> None:
     resp = _send_command(args.socket, "navigate", panel_id=args.panel, url=args.url)
     if resp.get("success"):
         data = resp.get("data", {})
-        print(f"✓ Panel {data.get('panel_id')} → {data.get('url')}")
+        print(f"[OK] Panel {data.get('panel_id')} -> {data.get('url')}")
     else:
         print(f"Error: {resp.get('error', 'desconocido')}", file=sys.stderr)
         sys.exit(1)
@@ -144,7 +144,7 @@ def cmd_focus(args: argparse.Namespace) -> None:
     resp = _send_command(args.socket, "focus", panel_id=args.panel)
     if resp.get("success"):
         data = resp.get("data", {})
-        print(f"✓ Foco en {data.get('panel_id')}")
+        print(f"[OK] Foco en {data.get('panel_id')}")
     else:
         print(f"Error: {resp.get('error', 'desconocido')}", file=sys.stderr)
         sys.exit(1)
@@ -155,7 +155,7 @@ def cmd_close_panel(args: argparse.Namespace) -> None:
     resp = _send_command(args.socket, "close_panel", panel_id=args.panel)
     if resp.get("success"):
         data = resp.get("data", {})
-        print(f"✓ Panel {data.get('panel_id')} cerrado")
+        print(f"[OK] Panel {data.get('panel_id')} cerrado")
     else:
         print(f"Error: {resp.get('error', 'desconocido')}", file=sys.stderr)
         sys.exit(1)
@@ -166,7 +166,7 @@ def cmd_split(args: argparse.Namespace) -> None:
     resp = _send_command(args.socket, "split", url=args.url)
     if resp.get("success"):
         data = resp.get("data", {})
-        print(f"✓ Nuevo panel {data.get('panel_id')} con URL {data.get('url')}")
+        print(f"[OK] Nuevo panel {data.get('panel_id')} con URL {data.get('url')}")
     else:
         print(f"Error: {resp.get('error', 'desconocido')}", file=sys.stderr)
         sys.exit(1)
@@ -214,7 +214,7 @@ def cmd_eval_js(args: argparse.Namespace) -> None:
     )
     if resp.get("success"):
         data = resp.get("data", {})
-        print(f"✓ eval_js ejecutado en {data.get('panel_id')}")
+        print(f"[OK] eval_js ejecutado en {data.get('panel_id')}")
     else:
         print(f"Error: {resp.get('error', 'desconocido')}", file=sys.stderr)
         sys.exit(1)
