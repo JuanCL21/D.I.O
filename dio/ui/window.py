@@ -10,12 +10,13 @@ import os
 import platform
 import stat
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
 from PyQt6 import sip
 from PyQt6.QtCore import QByteArray, QSize, QTimer, QUrl, Qt
-from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QShortcut
+from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtNetwork import QNetworkCookie
 from PyQt6.QtWebEngineCore import (
     QWebEngineDownloadRequest,
@@ -44,6 +45,7 @@ from dio.core.security import _secure_directory, secure_directory
 from dio.core.state import PanelEvent, PanelState, PanelStateMachine
 from dio.browser.interceptor import AdBlockInterceptor
 from dio.browser.page import DIOPage, _SystemBrowserRedirectPage
+from dio.browser.profile_manager import ProfileManager
 from dio.browser.scripts import (
     make_anti_detection_script,
     make_dark_mode_script,
@@ -51,6 +53,8 @@ from dio.browser.scripts import (
     _make_dark_mode_script,
 )
 from dio.ui.widgets import (
+    CrashOverlay,
+    HibernationOverlay,
     LoadingOverlay,
     MutedIndicator,
     SeamlessSplitter,
@@ -100,6 +104,9 @@ class DIOWindow(QMainWindow):
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
+        # ProfileManager (Decisión 2: pool LRU y preservación de perfiles en disco)
+        self._profile_manager = ProfileManager(parent=self)
+
         # Estado interno
         self._rows = rows
         self._cols = cols
@@ -110,6 +117,11 @@ class DIOWindow(QMainWindow):
         self._overlays: list[LoadingOverlay] = []
         self._mute_indicators: list[MutedIndicator] = []
         self._fsms: list[PanelStateMachine] = []
+        self._hibernation_overlays: list[HibernationOverlay] = []
+        self._crash_overlays: list[CrashOverlay] = []
+        self._pinned_flags: list[bool] = []
+        self._last_focused_times: list[float] = []
+        self._last_known_urls: list[str] = []
         self._panel_counter = 0
 
         # Interceptor de adblock compartido
@@ -133,6 +145,12 @@ class DIOWindow(QMainWindow):
 
         self._setup_shortcuts()
 
+        # Temporizador de comprobación de inactividad para hibernación
+        self._sleeping_timer = QTimer(self)
+        self._sleeping_timer.setInterval(15000)  # Cada 15 segundos
+        self._sleeping_timer.timeout.connect(self._check_background_sleeping)
+        self._sleeping_timer.start()
+
         logger.info(
             "Ventana creada: grid=%dx%d, preset=%s, paneles=%d, monitor=%d, "
             "dark_mode=%s, adblock=%s",
@@ -143,38 +161,27 @@ class DIOWindow(QMainWindow):
     # ── Creación de paneles ───────────────────────────────────────────────
 
     def _create_panel(self, url: str) -> QWebEngineView:
-        """Crea un panel web con perfil aislado y persistente en disco."""
+        """Crea un panel web con perfil aislado y persistente en disco (Decisión 2)."""
         idx = self._panel_counter
         self._panel_counter += 1
+        panel_id = f"panel_{idx}"
 
-        profile_path = config.PROFILES_DIR / f"panel_{idx}"
-        profile_path.mkdir(parents=True, exist_ok=True)
-        _secure_directory(profile_path)
+        # 1. Leer estado pinned desde config.toml
+        cfg = config.load_config_toml()
+        is_pinned = cfg.get("panels", {}).get(panel_id, {}).get("pinned", False)
 
-        profile = QWebEngineProfile(f"panel_{idx}", self)
-        profile.setPersistentStoragePath(str(profile_path))
-        profile.setCachePath(str(profile_path / "cache"))
-        profile.setHttpUserAgent(config.USER_AGENT)
-
-        if self._adblock_interceptor is not None:
-            profile.setUrlRequestInterceptor(self._adblock_interceptor)
-
-        settings = config.load_settings()
-        dl_dir = settings.get("downloads_dir", str(Path.home() / "Downloads" / "DIO"))
-        profile.setDownloadPath(str(Path(dl_dir).expanduser()))
+        # 2. Obtener o crear perfil vía ProfileManager (Decisión 2: caché LRU sin borrar disco)
+        profile = self._profile_manager.get_or_create_profile(
+            panel_id,
+            is_pinned=is_pinned,
+            adblock_interceptor=self._adblock_interceptor,
+            dark_mode=_DARK_MODE,
+        )
+        self._profiles.append(profile)
 
         profile.downloadRequested.connect(
             lambda dl, i=idx, pn=self._preset_name: self._on_download_requested(dl, i, pn)
         )
-
-        if _DARK_MODE:
-            profile.scripts().insert(_make_dark_mode_script())
-
-        # Anti-detección: inyecta JS que oculta señales de webview embebido
-        # para que Google OAuth y otros servicios permitan el login
-        profile.scripts().insert(_make_anti_detection_script())
-
-        self._profiles.append(profile)
 
         view = QWebEngineView()
         page = DIOPage(profile, view)
@@ -202,17 +209,34 @@ class DIOWindow(QMainWindow):
         view.setStyleSheet("background: black;")
         view.setUrl(QUrl(url))
 
+        # Registrar metadatos de panel
+        self._last_known_urls.append(url)
+        self._last_focused_times.append(time.time())
+        self._pinned_flags.append(is_pinned)
+
+        view.urlChanged.connect(lambda qurl, i=idx: self._on_url_changed(i, qurl))
+
         # Overlay de carga
         overlay = LoadingOverlay(view)
         self._overlays.append(overlay)
 
-        view.loadStarted.connect(lambda ov=overlay: self._on_load_started(ov))
-        view.loadProgress.connect(lambda progress, ov=overlay: self._on_load_progress(ov, progress))
-        view.loadFinished.connect(lambda ok, ov=overlay, i=idx: self._on_load_finished(ov, i, ok))
+        # Overlay de hibernación (Paso 3)
+        hib_overlay = HibernationOverlay(view)
+        hib_overlay.wake_requested.connect(lambda i=idx: self.wake_panel(i))
+        self._hibernation_overlays.append(hib_overlay)
+
+        # Overlay de crash recovery (Paso 3)
+        crash_overlay = CrashOverlay(view)
+        crash_overlay.manual_reload_requested.connect(lambda i=idx: self.manual_reload_panel(i))
+        self._crash_overlays.append(crash_overlay)
 
         # Indicador de silencio
         muted_indicator = MutedIndicator(view)
         self._mute_indicators.append(muted_indicator)
+
+        view.loadStarted.connect(lambda ov=overlay: self._on_load_started(ov))
+        view.loadProgress.connect(lambda progress, ov=overlay: self._on_load_progress(ov, progress))
+        view.loadFinished.connect(lambda ok, ov=overlay, i=idx: self._on_load_finished(ov, i, ok))
 
         # Crash recovery
         view.renderProcessTerminated.connect(
@@ -222,12 +246,19 @@ class DIOWindow(QMainWindow):
         )
 
         # FSM de ciclo de vida del panel
-        fsm = PanelStateMachine(panel_id=f"panel_{idx}")
+        fsm = PanelStateMachine(panel_id=panel_id)
         self._fsms.append(fsm)
 
         view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        logger.info("Panel %d creado: %s", idx, url)
+        logger.info("Panel %d creado [%s]: %s (pinned=%s)", idx, panel_id, url, is_pinned)
         return view
+
+    def _on_url_changed(self, panel_idx: int, qurl: QUrl) -> None:
+        """Actualiza la última URL conocida para poder restaurarla tras hibernación o crash."""
+        if panel_idx < len(self._last_known_urls) and qurl.isValid():
+            url_str = qurl.toString()
+            if url_str and url_str != "about:blank":
+                self._last_known_urls[panel_idx] = url_str
 
     # ── Callbacks de overlay de carga ─────────────────────────────────────
 
@@ -250,9 +281,15 @@ class DIOWindow(QMainWindow):
             fsm = self._fsms[panel_idx]
             if fsm.state == PanelState.INITIALIZING:
                 fsm.trigger(PanelEvent.INIT_FINISHED)
+            elif fsm.state == PanelState.RESTORING and ok:
+                fsm.trigger(PanelEvent.RESTORE_COMPLETED)
+                if panel_idx < len(self._hibernation_overlays):
+                    self._hibernation_overlays[panel_idx].hide()
             elif fsm.state == PanelState.RECOVERING and ok:
-                # DECISIÓN 4: loadFinished(True) tras recreación exitosa
+                # DECISIÓN 4: loadFinished(True) tras recreación exitosa resetea crash_count a 0
                 fsm.trigger(PanelEvent.LOAD_FINISHED_SUCCESS)
+                if panel_idx < len(self._crash_overlays):
+                    self._crash_overlays[panel_idx].hide()
 
     # ── Construcción del grid con QSplitters anidados ─────────────────────
 
@@ -629,20 +666,273 @@ class DIOWindow(QMainWindow):
         }
         status_str = status_names.get(status, f"desconocido({status})")
         logger.warning(
-            "Panel %d: proceso de render terminado (estado=%s, código=%d). "
-            "Reintentando en 3 segundos…",
+            "Panel %d: proceso de render terminado (estado=%s, código=%d).",
             panel_idx, status_str, exit_code,
         )
 
-        # Transición de la FSM: CRASHED -> RECOVERING
-        if panel_idx < len(self._fsms):
-            fsm = self._fsms[panel_idx]
-            if fsm.can_trigger(PanelEvent.RENDER_CRASHED):
-                fsm.trigger(PanelEvent.RENDER_CRASHED)
+        if panel_idx >= len(self._fsms):
+            return
+
+        fsm = self._fsms[panel_idx]
+        if fsm.can_trigger(PanelEvent.RENDER_CRASHED):
+            fsm.trigger(PanelEvent.RENDER_CRASHED)
+
+        max_retries = 4
+        if fsm.crash_count <= max_retries:
             if fsm.can_trigger(PanelEvent.RECOVERY_STARTED):
                 fsm.trigger(PanelEvent.RECOVERY_STARTED)
+            # Backoff exponencial: 1s, 2s, 4s, 8s (tope 16s)
+            delay = min(1.0 * (2 ** (fsm.crash_count - 1)), 16.0)
+            if panel_idx < len(self._crash_overlays):
+                self._crash_overlays[panel_idx].show_recovering(fsm.crash_count, max_retries, delay)
+            QTimer.singleShot(int(delay * 1000), lambda i=panel_idx: self._attempt_crash_recovery(i))
+        else:
+            if fsm.can_trigger(PanelEvent.RECOVERY_FAILED):
+                fsm.trigger(PanelEvent.RECOVERY_FAILED)
+            if panel_idx < len(self._crash_overlays):
+                self._crash_overlays[panel_idx].show_failed()
 
-        QTimer.singleShot(3000, view.reload)
+    def _attempt_crash_recovery(self, idx: int) -> None:
+        """Recrea de forma segura el panel tras un crash usando el mismo perfil (Decisión 2)."""
+        if idx < 0 or idx >= len(self._panels):
+            return
+
+        fsm = self._fsms[idx]
+        if fsm.state != PanelState.RECOVERING:
+            return
+
+        view = self._panels[idx]
+        panel_id = f"panel_{idx}"
+        is_pinned = self._pinned_flags[idx] if idx < len(self._pinned_flags) else False
+
+        logger.info("Panel %d [%s]: Ejecutando reintento de recuperación (intento %d)", idx, panel_id, fsm.crash_count)
+
+        # 1. Desacoplar página averiada
+        old_page = view.page()
+        view.setPage(None)
+        if old_page is not None and not sip.isdeleted(old_page):
+            try:
+                old_page.setParent(None)
+                sip.delete(old_page)
+            except Exception:
+                old_page.deleteLater()
+
+        # 2. Recrear con el mismo perfil persistente en disco (Decisión 2)
+        profile = self._profile_manager.get_or_create_profile(
+            panel_id,
+            is_pinned=is_pinned,
+            adblock_interceptor=self._adblock_interceptor,
+            dark_mode=_DARK_MODE,
+        )
+        if idx < len(self._profiles):
+            self._profiles[idx] = profile
+
+        page = DIOPage(profile, view)
+        page.featurePermissionRequested.connect(
+            lambda origin, feature, p=page: self._handle_permission(p, origin, feature)
+        )
+        view.setPage(page)
+
+        # 3. Recargar última URL conocida
+        target_url = self._last_known_urls[idx] if idx < len(self._last_known_urls) else "about:blank"
+        view.setUrl(QUrl(target_url))
+
+    def manual_reload_panel(self, idx: int) -> None:
+        """Permite al usuario forzar la recarga manual tras agotarse los reintentos automáticos."""
+        if idx < 0 or idx >= len(self._panels):
+            return
+        fsm = self._fsms[idx]
+        if fsm.state == PanelState.FAILED:
+            fsm.trigger(PanelEvent.MANUAL_RELOAD)
+            self._attempt_crash_recovery(idx)
+
+    # ── Hibernación de memoria (Tab Discarding) ───────────────────────────
+
+    def hibernate_panel(self, idx: int) -> bool:
+        """
+        Transiciona un panel de ACTIVE -> HIBERNATING -> HIBERNATED.
+        Captura snapshot visual, destruye la QWebEnginePage liberando el proceso Chromium hijo,
+        muestra el snapshot con el overlay y conserva el perfil persistente en disco (Decisión 2).
+        """
+        if idx < 0 or idx >= len(self._panels):
+            return False
+
+        fsm = self._fsms[idx]
+        if fsm.state != PanelState.ACTIVE:
+            logger.warning("No se puede hibernar panel %d: estado actual es %s", idx, fsm.state.name)
+            return False
+
+        if idx < len(self._pinned_flags) and self._pinned_flags[idx]:
+            logger.info("Panel %d está marcado como PINNED (Do Not Sleep); hibernación ignorada", idx)
+            return False
+
+        view = self._panels[idx]
+        panel_id = f"panel_{idx}"
+
+        try:
+            fsm.trigger(PanelEvent.DISCARD_REQUESTED)
+
+            # 1. Captura de snapshot visual con grab()
+            pixmap = view.grab()
+
+            # 2. Mostrar overlay estático de hibernación
+            if idx < len(self._hibernation_overlays):
+                hib_overlay = self._hibernation_overlays[idx]
+                hib_overlay.set_snapshot(pixmap)
+                hib_overlay.reposition()
+                hib_overlay.show()
+                hib_overlay.raise_()
+
+            fsm.trigger(PanelEvent.DISCARD_COMPLETED)
+
+            # 3. Desacople y destrucción de QWebEnginePage para liberar proceso de Chromium
+            page = view.page()
+            view.setPage(None)
+            if page is not None and not sip.isdeleted(page):
+                try:
+                    page.setParent(None)
+                    sip.delete(page)
+                except Exception:
+                    page.deleteLater()
+
+            # 4. Decisión 2: Notificar a ProfileManager para liberar referencia en memoria (sin tocar disco)
+            self._profile_manager.release_profile_reference(panel_id)
+
+            logger.info("Panel %d [%s] hibernado exitosamente (memoria de renderer liberada)", idx, panel_id)
+            return True
+        except Exception as exc:
+            logger.error("Error al hibernar panel %d: %s", idx, exc)
+            return False
+
+    def wake_panel(self, idx: int) -> bool:
+        """
+        Transiciona un panel de HIBERNATED -> RESTORING -> ACTIVE.
+        Recrea QWebEnginePage con el MISMO perfil persistente en disco (Decisión 2)
+        y recarga la última URL conocida.
+        """
+        if idx < 0 or idx >= len(self._panels):
+            return False
+
+        fsm = self._fsms[idx]
+        if fsm.state != PanelState.HIBERNATED:
+            return False
+
+        view = self._panels[idx]
+        panel_id = f"panel_{idx}"
+        is_pinned = self._pinned_flags[idx] if idx < len(self._pinned_flags) else False
+
+        try:
+            fsm.trigger(PanelEvent.RESTORE_REQUESTED)
+
+            # 1. Recrear perfil y página compartida (Decisión 2: datos en disco intactos)
+            profile = self._profile_manager.get_or_create_profile(
+                panel_id,
+                is_pinned=is_pinned,
+                adblock_interceptor=self._adblock_interceptor,
+                dark_mode=_DARK_MODE,
+            )
+            if idx < len(self._profiles):
+                self._profiles[idx] = profile
+
+            page = DIOPage(profile, view)
+            page.featurePermissionRequested.connect(
+                lambda origin, feature, p=page: self._handle_permission(p, origin, feature)
+            )
+
+            settings = page.settings()
+            settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanPaste, True)
+
+            view.setPage(page)
+
+            # 2. Restaurar última URL
+            target_url = self._last_known_urls[idx] if idx < len(self._last_known_urls) else "about:blank"
+            view.setUrl(QUrl(target_url))
+
+            if idx < len(self._last_focused_times):
+                self._last_focused_times[idx] = time.time()
+
+            logger.info("Panel %d [%s] restaurando desde hibernación hacia %s", idx, panel_id, target_url)
+            return True
+        except Exception as exc:
+            logger.error("Error al despertar panel %d: %s", idx, exc)
+            return False
+
+    def _check_background_sleeping(self) -> None:
+        """Verifica periódicamente qué paneles en background superaron el timeout de inactividad."""
+        cfg = config.load_config_toml()
+        sleeping_cfg = cfg.get("sleeping", {})
+        if not sleeping_cfg.get("enabled", False):
+            return
+
+        timeout_minutes = sleeping_cfg.get("timeout_minutes", 15)
+        timeout_s = timeout_minutes * 60
+        now = time.time()
+
+        focused_view = self._get_focused_view()
+
+        for i, view in enumerate(self._panels):
+            if i >= len(self._fsms) or i >= len(self._pinned_flags):
+                continue
+
+            # 1. Perfil marcado como Pinned NUNCA hiberna
+            if self._pinned_flags[i]:
+                continue
+
+            # 2. Panel debe estar ACTIVE
+            if self._fsms[i].state != PanelState.ACTIVE:
+                continue
+
+            # 3. Panel no debe tener el foco
+            if view == focused_view or view.hasFocus():
+                if i < len(self._last_focused_times):
+                    self._last_focused_times[i] = now
+                continue
+
+            # 4. Panel no debe tener audio activo
+            page = view.page()
+            if page is not None and hasattr(page, "recentlyAudible") and page.recentlyAudible():
+                continue
+
+            # 5. Superó el timeout en background
+            last_focus = self._last_focused_times[i] if i < len(self._last_focused_times) else now
+            if now - last_focus >= timeout_s:
+                logger.info("Hibernando panel %d por inactividad (>%d min)", i, timeout_minutes)
+                self.hibernate_panel(i)
+
+    def toggle_pin_focused_panel(self) -> None:
+        """Ctrl+P: Conmuta el estado 'Pinned / Do Not Sleep' para el panel con foco."""
+        view = self._get_focused_view()
+        if view is None or view not in self._panels:
+            return
+
+        idx = self._panels.index(view)
+        new_pinned = not self._pinned_flags[idx]
+        self._pinned_flags[idx] = new_pinned
+        panel_id = f"panel_{idx}"
+
+        self._profile_manager.set_pinned(panel_id, new_pinned)
+
+        # Persistir en config.toml
+        cfg = config.load_config_toml()
+        cfg.setdefault("panels", {}).setdefault(panel_id, {})["pinned"] = new_pinned
+        config.save_config_toml(cfg)
+
+        status_str = "FIJADO 📌 (Do Not Sleep)" if new_pinned else "DESFIJADO 🌙 (Hibernación activa)"
+        ToastNotification(f"Panel {idx} {status_str}", self)
+        logger.info("Panel %d [%s]: %s", idx, panel_id, status_str)
+
+    def _manual_hibernate_focused(self) -> None:
+        """Ctrl+Shift+H: Hiberna manualmente el panel con foco (para pruebas o ahorro inmediato)."""
+        view = self._get_focused_view()
+        if view is None or view not in self._panels:
+            return
+        idx = self._panels.index(view)
+        # Desenfocar para permitir hibernar
+        self.setFocus()
+        self.hibernate_panel(idx)
 
     # ── Persistencia de sesión ────────────────────────────────────────────
 
@@ -725,6 +1015,12 @@ class DIOWindow(QMainWindow):
         for indicator in self._mute_indicators:
             if indicator.isVisible():
                 indicator.reposition()
+        for hib in self._hibernation_overlays:
+            if hib.isVisible():
+                hib.reposition()
+        for crash in self._crash_overlays:
+            if crash.isVisible():
+                crash.reposition()
 
     # ── Atajos de teclado ─────────────────────────────────────────────────
 
@@ -736,6 +1032,10 @@ class DIOWindow(QMainWindow):
 
         # Cerrar la aplicación (Ctrl+Q; se eliminó Esc para evitar cierres accidentales al usar la web)
         reg("Ctrl+Q", "Cerrar la aplicación y guardar sesión", self.close)
+
+        # Fijar panel (Pinned / Do Not Sleep) y forzar hibernación
+        reg("Ctrl+P", "Fijar / Desfijar panel activo (Pinned: Do Not Sleep)", self.toggle_pin_focused_panel)
+        reg("Ctrl+Shift+H", "Hibernar panel activo inmediatamente", self._manual_hibernate_focused)
 
         # Navegación y Búsqueda inteligente
         reg("Ctrl+L", "Ir a URL o Buscar en Google en el panel activo", self._goto_url)
@@ -851,16 +1151,17 @@ class DIOWindow(QMainWindow):
 
     def teardown_panel(self, idx: int) -> None:
         """
-        H-01 / H-02: Destruye de forma determinista un panel y sus recursos asociados.
+        H-01 / H-02 & DECISIÓN 2: Destruye de forma determinista un panel y sus recursos asociados.
         Aplica el desacople estricto: panel.setPage(None) antes de destruir la página,
-        destruye la página explícitamente y libera el perfil C++ en memoria
-        (profile.deleteLater()), evitando fugas de procesos Chromium y desfasaje de índices.
+        destruye la página explícitamente y libera la referencia en memoria vía ProfileManager.
+        Los datos y sesiones en disco (~/.dio/profiles/panel_N/) NUNCA se destruyen aquí.
         """
         if idx < 0 or idx >= len(self._panels):
             return
 
         view = self._panels.pop(idx)
         profile = self._profiles.pop(idx) if idx < len(self._profiles) else None
+        panel_id = f"panel_{idx}"
 
         if idx < len(self._overlays):
             overlay = self._overlays.pop(idx)
@@ -872,30 +1173,48 @@ class DIOWindow(QMainWindow):
             indicator.setParent(None)
             indicator.deleteLater()
 
+        if idx < len(self._hibernation_overlays):
+            hib_ov = self._hibernation_overlays.pop(idx)
+            hib_ov.setParent(None)
+            hib_ov.deleteLater()
+
+        if idx < len(self._crash_overlays):
+            crash_ov = self._crash_overlays.pop(idx)
+            crash_ov.setParent(None)
+            crash_ov.deleteLater()
+
         if idx < len(self._fsms):
             self._fsms.pop(idx)
+
+        if idx < len(self._pinned_flags):
+            self._pinned_flags.pop(idx)
+
+        if idx < len(self._last_focused_times):
+            self._last_focused_times.pop(idx)
+
+        if idx < len(self._last_known_urls):
+            self._last_known_urls.pop(idx)
 
         # Desacoplar vista del layout
         view.setParent(None)
 
-        # 1. Desacoplar explícitamente la página del QWebEngineView
+        # 1. H-01: Desacoplar explícitamente la página del QWebEngineView
         page = view.page()
         view.setPage(None)
 
         # 2. Destruir la página desacoplada antes de liberar el perfil
-        if page is not None:
-            page.setParent(None)
+        if page is not None and not sip.isdeleted(page):
             try:
+                page.setParent(None)
                 sip.delete(page)
             except Exception:
                 page.deleteLater()
         view.deleteLater()
 
-        # 3. Liberar el perfil en memoria (QWebEngineProfile)
-        #    deleteLater() descarga las estructuras C++ y termina el proceso
-        #    de render de Chromium asociado; los datos en disco (~/.dio/profiles/panel_N/)
-        #    permanecen intactos para futuras sesiones.
-        if profile is not None:
+        # 3. DECISIÓN 2: Liberar la referencia en ProfileManager (LRU en memoria).
+        #    Los datos en disco (~/.dio/profiles/panel_N/) permanecen 100% intactos.
+        self._profile_manager.release_profile_reference(panel_id)
+        if profile is not None and profile.parent() == self:
             profile.deleteLater()
 
     def _remove_panel(self) -> None:
@@ -912,7 +1231,11 @@ class DIOWindow(QMainWindow):
 
     def _focus_panel(self, idx: int) -> None:
         if 0 <= idx < len(self._panels):
+            if idx < len(self._fsms) and self._fsms[idx].state == PanelState.HIBERNATED:
+                self.wake_panel(idx)
             self._panels[idx].setFocus()
+            if idx < len(self._last_focused_times):
+                self._last_focused_times[idx] = time.time()
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
