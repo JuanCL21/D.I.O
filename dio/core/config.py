@@ -494,6 +494,23 @@ def ensure_config(dio_dir: Path | None = None) -> dict[str, Any]:
         if not migrated:
             save_config_toml(DEFAULT_CONFIG, target_toml)
 
+    # Hardening y advertencia de seguridad (Paso 7 / Tarea 4)
+    warn_flag = base_dir / ".backup_security_warned"
+    if not warn_flag.exists():
+        try:
+            from dio.core.logger import logger
+            logger.warning(
+                "[ADVERTENCIA DE SEGURIDAD] ~/.dio/profiles almacena cookies, credenciales y tokens "
+                "de sesion web en texto plano. NO sincronice esta carpeta a servicios de backup en la "
+                "nube sin cifrado previo (ej. Nextcloud, Dropbox, Google Drive, OneDrive)."
+            )
+        except Exception:
+            pass
+        try:
+            warn_flag.touch(mode=0o600)
+        except OSError:
+            pass
+
     return load_config_toml(target_toml)
 
 

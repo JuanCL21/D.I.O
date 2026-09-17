@@ -220,10 +220,45 @@ def cmd_eval_js(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_export_preset(args: argparse.Namespace) -> None:
+    """Empaqueta config.toml y adapters en un archivo compartible."""
+    from dio.presets.package import export_preset, PresetPackageError
+    try:
+        out_path = export_preset(
+            output_path=args.output,
+            name=args.name,
+            description=args.description,
+            include_adapters=not args.no_adapters,
+        )
+        print(f"[OK] Preset exportado exitosamente a: {out_path}")
+    except PresetPackageError as exc:
+        print(f"Error al exportar preset: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_import_preset(args: argparse.Namespace) -> None:
+    """Importa un archivo de preset (.dio.tar.gz) en ~/.dio/."""
+    from dio.presets.package import import_preset, PresetPackageError
+    try:
+        result = import_preset(
+            archive_path=args.archive,
+            overwrite=args.overwrite,
+        )
+        manifest = result.get("manifest", {})
+        print(f"[OK] Preset '{manifest.get('name')}' importado exitosamente.")
+        print(f"     Configuracion: {result.get('config_status')}")
+        print(f"     Adapters importados: {len(result.get('imported_adapters', []))}")
+        for adp in result.get("imported_adapters", []):
+            print(f"       - {adp}")
+    except PresetPackageError as exc:
+        print(f"Error al importar preset: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dio-cli",
-        description="D.I.O. CLI — Control externo de paneles web vía IPC seguro",
+        description="D.I.O. CLI — Control externo de paneles web vía IPC seguro y gestion de presets",
     )
     parser.add_argument(
         "--socket", "-s",
@@ -273,6 +308,34 @@ def main() -> None:
     sp_eval.add_argument("--panel", required=True, help="ID del panel (ej. panel_0)")
     sp_eval.add_argument("--code", required=True, help="Código JavaScript a ejecutar")
     sp_eval.set_defaults(func=cmd_eval_js)
+
+    # export-preset
+    sp_exp = subparsers.add_parser(
+        "export-preset",
+        help="Empaquetar config.toml y adapters en un archivo compartible (.dio.tar.gz)",
+    )
+    sp_exp.add_argument(
+        "--output", "-o",
+        default="custom_preset.dio.tar.gz",
+        help="Ruta destino del archivo empaquetado",
+    )
+    sp_exp.add_argument("--name", "-n", default="custom_preset", help="Nombre descriptivo del preset")
+    sp_exp.add_argument("--description", "-d", default="", help="Descripcion del preset")
+    sp_exp.add_argument("--no-adapters", action="store_true", help="Excluir adapters personalizados")
+    sp_exp.set_defaults(func=cmd_export_preset)
+
+    # import-preset
+    sp_imp = subparsers.add_parser(
+        "import-preset",
+        help="Importar paquete de preset (.dio.tar.gz) en ~/.dio/",
+    )
+    sp_imp.add_argument("archive", help="Ruta al archivo .dio.tar.gz")
+    sp_imp.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Sobrescribir adapters y respaldar/actualizar config.toml",
+    )
+    sp_imp.set_defaults(func=cmd_import_preset)
 
     args = parser.parse_args()
     args.func(args)

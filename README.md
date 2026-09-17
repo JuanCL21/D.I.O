@@ -111,8 +111,44 @@ python3 dio.py --no-dark-mode --no-adblock
 | `Ctrl + Shift + R` | Recargar todos los paneles |
 | `Ctrl + Shift + A` | Silenciar o reactivar audio global |
 | `Ctrl + M` | Silenciar o reactivar audio del panel activo |
+| `Ctrl + Shift + D` | Desacoplar panel activo a ventana flotante independiente |
+| `Ctrl + Alt + 1..9` | Conmutar entre los 9 workspaces virtuales independientes |
 | `Ctrl + Shift + I` | Importar cookies desde navegador local |
 | `Escape` | Salir guardando la sesion |
+
+---
+
+## Formato de Presets Compartibles
+
+D.I.O. permite empaquetar la configuracion del usuario (`config.toml`) y sus adaptadores de IA personalizados (`~/.dio/adapters/*.json`) en un paquete comprimido (`.dio.tar.gz`) sin incluir cookies ni credenciales personales:
+
+```bash
+# Exportar preset actual con adapters
+dio-cli export-preset --output mi_preset.dio.tar.gz --name "IA Cockpit" --description "Configuracion optimizada"
+
+# Importar preset en otra maquina o cuenta
+dio-cli import-preset mi_preset.dio.tar.gz --overwrite
+```
+
+---
+
+## Seguridad y Privacidad de Perfiles
+
+> [!WARNING]
+> **ADVERTENCIA DE SEGURIDAD**: El directorio `~/.dio/profiles/` almacena perfiles persistentes de Chromium, incluyendo cookies, almacenamiento local (LocalStorage) y tokens de sesion web en texto plano (con permisos restrictivos de sistema de archivos `0700` para carpetas y `0600` para archivos).
+> **NO sincronice `~/.dio/profiles` a servicios de backup o sincronizacion en la nube sin cifrado previo** (ej. Nextcloud, Dropbox, Google Drive, OneDrive o sincronizadores genericos). Para respaldar o transferir su configuracion de forma segura, utilice unicamente `dio-cli export-preset`, que exporta exclusivamente layouts y selectores sin exponer datos de sesion.
+
+---
+
+## Distribucion e Instalacion via AppImage
+
+D.I.O. se distribuye tambien como un AppImage autonomo que empaqueta el runtime de Python, PyQt6, PyQt6-WebEngine y las librerias nativas requeridas para correr en cualquier distribucion Linux moderna sin instalacion previa:
+
+```bash
+# Otorgar permisos de ejecucion y lanzar
+chmod +x D.I.O-x86_64.AppImage
+./D.I.O-x86_64.AppImage
+```
 
 ---
 

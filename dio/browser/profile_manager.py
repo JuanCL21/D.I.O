@@ -76,6 +76,8 @@ class ProfileManager(QObject):
             self._evict_lru()
 
         # 3. Crear nuevo QWebEngineProfile persistente en disco
+        config.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+        secure_directory(config.PROFILES_DIR)
         profile_path = config.PROFILES_DIR / panel_id
         profile_path.mkdir(parents=True, exist_ok=True)
         secure_directory(profile_path)
