@@ -10,6 +10,8 @@ from dio.ui.dialogs import (
     resolve_query_or_url,
 )
 from dio.ui.widgets import (
+    CrashOverlay,
+    HibernationOverlay,
     LoadingOverlay,
     MutedIndicator,
     SeamlessSplitter,
@@ -25,6 +27,8 @@ __all__ = [
     "LoadingOverlay",
     "MutedIndicator",
     "ToastNotification",
+    "HibernationOverlay",
+    "CrashOverlay",
     "OmniSearchDialog",
     "KeySequenceRecorderDialog",
     "SettingsOverlayDialog",

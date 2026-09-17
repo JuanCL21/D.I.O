@@ -3,9 +3,10 @@ D.I.O. — Widgets personalizados: Splitters sin bordes, Overlays de carga,
 indicadores de muteo y notificaciones toast.
 """
 
-from PyQt6.QtCore import QSize, QTimer, Qt
+from PyQt6.QtCore import QSize, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QLabel, QSplitter, QSplitterHandle
+from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QSplitter, QSplitterHandle, QVBoxLayout
 
 
 class SeamlessSplitterHandle(QSplitterHandle):
@@ -139,3 +140,166 @@ class ToastNotification(QLabel):
                 parent.width() - self.width() - margin,
                 parent.height() - self.height() - margin,
             )
+
+
+class HibernationOverlay(QFrame):
+    """
+    Overlay que se muestra sobre un panel hibernado.
+    Presenta la captura visual estática (snapshot) atenuada y un badge
+    interactivo para despertar el panel al hacer clic.
+    """
+    wake_requested = pyqtSignal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("HibernationOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self._snapshot_label = QLabel(self)
+        self._snapshot_label.setScaledContents(True)
+
+        self._backdrop = QFrame(self)
+        self._backdrop.setStyleSheet("background: rgba(15, 15, 23, 0.85);")
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card = QFrame(self)
+        card.setStyleSheet("""
+            QFrame {
+                background: #181825;
+                border: 1.5px solid #45475a;
+                border-radius: 12px;
+                padding: 18px 24px;
+            }
+            QLabel {
+                color: #cdd6f4;
+                font-family: system-ui, sans-serif;
+            }
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.setSpacing(6)
+
+        title = QLabel("🌙 <b style='font-size: 15px; color: #89b4fa;'>Panel en Hibernación</b>")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(title)
+
+        desc = QLabel("<span style='font-size: 12px; color: #a6adc8;'>Memoria RAM liberada por inactividad.</span>")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(desc)
+
+        action = QLabel("<b style='font-size: 12px; color: #a6e3a1;'>⚡ Haz clic para reanudar la sesión</b>")
+        action.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(action)
+
+        layout.addWidget(card)
+        self.hide()
+
+    def set_snapshot(self, pixmap: QPixmap) -> None:
+        """Aplica la captura de pantalla estática al overlay."""
+        self._snapshot_label.setPixmap(pixmap)
+        self.reposition()
+
+    def mousePressEvent(self, event) -> None:
+        self.wake_requested.emit()
+        super().mousePressEvent(event)
+
+    def reposition(self) -> None:
+        parent = self.parent()
+        if parent is not None:
+            self.setGeometry(0, 0, parent.width(), parent.height())
+            self._snapshot_label.setGeometry(0, 0, parent.width(), parent.height())
+            self._backdrop.setGeometry(0, 0, parent.width(), parent.height())
+
+
+class CrashOverlay(QFrame):
+    """
+    Overlay visual de resiliencia ante crashes de renderer (Crash Recovery).
+    Informa del estado de recuperación y provee recarga manual si se agotan reintentos.
+    """
+    manual_reload_requested = pyqtSignal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("CrashOverlay")
+        self.setStyleSheet("background: rgba(17, 17, 27, 0.95);")
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._card = QFrame(self)
+        self._card.setStyleSheet("""
+            QFrame {
+                background: #1e1e2e;
+                border: 1.5px solid #f38ba8;
+                border-radius: 12px;
+                padding: 20px;
+            }
+            QLabel {
+                color: #cdd6f4;
+                font-family: system-ui, sans-serif;
+            }
+            QPushButton {
+                background-color: #f38ba8;
+                color: #11111b;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 8px 16px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #eba0ac;
+            }
+        """)
+        card_layout = QVBoxLayout(self._card)
+        card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.setSpacing(10)
+
+        self._icon_label = QLabel("⚠️ <b style='font-size: 16px; color: #f38ba8;'>Renderer Interrumpido</b>")
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._icon_label)
+
+        self._status_label = QLabel("Recuperando automáticamente sesión...")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._status_label)
+
+        self._reload_btn = QPushButton("🔄 Recargar Panel")
+        self._reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reload_btn.clicked.connect(self.manual_reload_requested.emit)
+        self._reload_btn.hide()
+        card_layout.addWidget(self._reload_btn)
+
+        layout.addWidget(self._card)
+        self.hide()
+
+    def show_recovering(self, attempt: int, max_retries: int, delay_s: float) -> None:
+        """Muestra estado de reintento automático con backoff."""
+        self._icon_label.setText("⚠️ <b style='font-size: 15px; color: #fab387;'>Recuperando Renderer</b>")
+        self._status_label.setText(
+            f"El proceso web falló inesperadamente.<br>"
+            f"Reintentando conexión ({attempt}/{max_retries}) en {delay_s:.1f}s…"
+        )
+        self._reload_btn.hide()
+        self.reposition()
+        self.show()
+        self.raise_()
+
+    def show_failed(self) -> None:
+        """Muestra estado de fallo definitivo con botón de recarga manual."""
+        self._icon_label.setText("❌ <b style='font-size: 15px; color: #f38ba8;'>Recuperación Fallida</b>")
+        self._status_label.setText(
+            "Se agotaron todos los reintentos automáticos.<br>"
+            "Puedes intentar recargar el panel manualmente."
+        )
+        self._reload_btn.show()
+        self.reposition()
+        self.show()
+        self.raise_()
+
+    def reposition(self) -> None:
+        parent = self.parent()
+        if parent is not None:
+            self.setGeometry(0, 0, parent.width(), parent.height())
